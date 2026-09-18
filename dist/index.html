@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="description" content="Production-grade 34-algorithm Reinforcement Learning ensemble for ETH/USDT trading with real-time signals, risk management, and execution engine."/>
+  <title>ETH/USDT · Production RL Engine · 34-Algorithm Ensemble</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+  <script type="module" crossorigin src="/assets/index-BwhDVIuR.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-Bz11zzOI.css">
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="header" id="header">
+    <div class="header-left">
+      <div class="logo">⬡ ETH/USDT</div>
+      <span class="logo-sub">PRODUCTION RL ENGINE</span>
+    </div>
+    <div class="header-right">
+      <div class="auto-train-badge" id="autoTrainBadge"><span class="live-dot" style="background:var(--green);"></span>● AUTO-TRAINED 34 RL · CONTINUOUS ONLINE</div>
+      <div class="prod-badge"><span class="live-dot" style="background:var(--accent);"></span>PRODUCTION ENGINE · 34-RL PRE-TRAINED</div>
+      <button class="btn-header active-live" id="btnLiveToggle" onclick="window._toggleLiveStream()">● LIVE BINANCE</button>
+      <span class="header-meta">34-ALGO ENSEMBLE · LIVE</span>
+      <div class="live-badge" id="liveBadge"><div class="live-dot"></div>PROD LIVE</div>
+    </div>
+  </header>
+
+  <!-- 6-Layer Architecture Navigation Bar -->
+  <nav class="layer-nav" id="layerNav">
+    <div class="layer-nav-inner">
+      <span class="layer-nav-label">QUANT PIPELINE:</span>
+      <button class="layer-tab active" data-layer="overview">⚡ 6-LAYER OVERVIEW</button>
+      <button class="layer-tab" data-layer="l1">L1 DATA INGESTION</button>
+      <button class="layer-tab" data-layer="l2">L2 ALPHA & 34 RL</button>
+      <button class="layer-tab" data-layer="l3">L3 PORTFOLIO</button>
+      <button class="layer-tab" data-layer="l4">L4 EXECUTION</button>
+      <button class="layer-tab" data-layer="l5">L5 RISK</button>
+      <button class="layer-tab" data-layer="l6">L6 ATTRIBUTION</button>
+    </div>
+  </nav>
+
+  <!-- Main 3-Column Layout -->
+  <main class="main-layout">
+
+    <!-- ═══ LEFT COLUMN ═══ -->
+    <aside class="left-col">
+
+      <!-- Price Panel -->
+      <section class="panel" id="pricePanel">
+        <h2 class="panel-title">ETH/USDT · BINANCE</h2>
+        <div class="price-main" id="price">$2,608.50</div>
+        <div class="price-meta">
+          <span class="price-change pos" id="priceChange">+2.45%</span>
+          <span class="price-range">24H: <span id="high24">$2,612.00</span> / <span id="low24">$2,436.40</span></span>
+        </div>
+        <div class="sparkline-wrap"><canvas id="sparkCanvas"></canvas></div>
+        <div class="stat-row">
+          <div class="stat-box"><div class="stat-k">Volume</div><div class="stat-v" id="vol24h">$4.2B</div></div>
+          <div class="stat-box"><div class="stat-k">Funding</div><div class="stat-v" id="funding">+0.012%</div></div>
+        </div>
+      </section>
+
+      <!-- HMM Regime -->
+      <section class="panel" id="hmmPanel">
+        <h2 class="panel-title">HMM · MARKET REGIME</h2>
+        <div class="regime-indicator" id="regimeLabel">BULLISH TREND</div>
+        <div class="panel-sub">State probabilities</div>
+        <div id="hmmBeliefs"></div>
+      </section>
+
+      <!-- POMDP Belief State -->
+      <section class="panel" id="pomdpPanel">
+        <h2 class="panel-title">POMDP · BELIEF STATE</h2>
+        <div id="pomdpBeliefs"></div>
+        <div class="panel-sub">Hidden state estimation via particle filter</div>
+      </section>
+
+      <!-- Order Book -->
+      <section class="panel" id="obPanel">
+        <h2 class="panel-title">ORDER BOOK · L2</h2>
+        <div id="orderbook"></div>
+      </section>
+
+      <!-- Risk Engine -->
+      <section class="panel" id="riskPanel">
+        <h2 class="panel-title">🛡 RISK ENGINE · KILL SWITCH</h2>
+        <div id="riskRows"></div>
+        <div class="badge-row">
+          <span class="exec-badge exec-active">✓ ACTIVE</span>
+          <span class="exec-badge exec-idle" id="killSwitch">KILL SW</span>
+          <span class="exec-badge exec-idle" id="maxPosFlag">MAX POS</span>
+        </div>
+      </section>
+
+    </aside>
+
+    <!-- ═══ CENTER COLUMN ═══ -->
+    <div class="center-col">
+
+      <!-- Dynamic 6-Layer Architecture Panel -->
+      <section class="panel panel-accent" id="quantLayerPanel"></section>
+
+      <!-- Ensemble Verdict -->
+      <section class="panel panel-accent" id="ensemblePanel">
+        <h2 class="panel-title">34-ALGORITHM ENSEMBLE · FINAL VERDICT</h2>
+        <div class="ensemble-row">
+          <div class="gauge-wrap">
+            <div class="gauge-label">ENSEMBLE SIGNAL</div>
+            <div class="gauge-value" id="ensembleVal">+0.73</div>
+            <div class="gauge-action" id="ensembleAction">◆ STRONG BUY</div>
+          </div>
+          <div class="ensemble-chart-wrap"><canvas id="ensembleChart" height="70"></canvas></div>
+          <div class="vote-wrap">
+            <div class="panel-sub">VOTE BREAKDOWN</div>
+            <div id="voteBreakdown"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Live Candlestick Anatomy & Bearish/Bullish Inspector HUD -->
+      <section class="panel panel-accent" id="candleInspectorPanel"></section>
+
+      <!-- NEXUS-V Institutional Production Strategy Engine -->
+      <section class="panel panel-accent" id="productionStrategyPanel"></section>
+
+      <!-- Active Trade Signal & Risk Orders (Stop Loss · Take Profit) -->
+      <section class="panel panel-accent" id="activeTradeSignalPanel"></section>
+
+      <!-- Price Chart -->
+      <section class="panel panel-grow" id="chartPanel">
+        <div class="chart-header">
+          <h2 class="panel-title" style="margin:0;">PRICE CHART · CANDLESTICKS & SIGNALS</h2>
+          <div class="tabs" id="tfTabs">
+            <button class="tab" data-tf="3m">3m</button>
+            <button class="tab active" data-tf="15m">15m</button>
+            <button class="tab" data-tf="30m">30m</button>
+            <button class="tab" data-tf="1h">1h</button>
+          </div>
+        </div>
+        <canvas id="priceChart" height="240"></canvas>
+        <div class="chart-legend">
+          <span class="legend-item" style="color:var(--green);">■ Bullish Candle</span>
+          <span class="legend-item" style="color:var(--red);">■ Bearish Candle</span>
+          <span class="legend-item" style="color:var(--accent);">── 9 EMA</span>
+          <span class="legend-item" style="color:var(--warn);">── Q-Value</span>
+        </div>
+      </section>
+
+      <!-- Multi-Timeframe Candlestick Confluence Matrix (1h, 30m, 15m, 3m) -->
+      <section class="panel" id="mtfMatrixPanel"></section>
+
+      <!-- Candlestick Pattern Recognition Engine (35+ Patterns) -->
+      <section class="panel" id="candlestickPanel"></section>
+
+      <!-- 8 Classical Trading Algorithms Suite -->
+      <section class="panel" id="tradingAlgosPanel"></section>
+
+      <!-- The Pinnacle Quant Algorithm Suite (Avellaneda-Stoikov HJB + Hawkes & Kyle's Lambda) -->
+      <section class="panel panel-accent" id="institutionalAlgoPanel"></section>
+
+      <!-- Algorithm Divergence & Explainability Engine -->
+      <section class="panel panel-accent" id="algoDivergencePanel"></section>
+
+      <!-- Algorithm Signal Matrix -->
+      <section class="panel" id="algoPanel">
+        <h2 class="panel-title">ALL 34 RL ALGORITHMS · SIGNAL MATRIX</h2>
+        <div class="tabs" id="algoTabs">
+          <button class="tab active" data-cat="all">ALL</button>
+          <button class="tab" data-cat="value">VALUE</button>
+          <button class="tab" data-cat="policy">POLICY</button>
+          <button class="tab" data-cat="model">MODEL</button>
+          <button class="tab" data-cat="advanced">ADVANCED</button>
+        </div>
+        <div class="algo-grid scroll" id="algoGrid"></div>
+      </section>
+
+      <!-- All 34 Algorithms Win Rate Leaderboard & Failure Auto-Fix Engine -->
+      <section class="panel panel-accent" id="algoWinRateFixPanel"></section>
+
+      <!-- 6-Month Historical Training & Model Verification Audit -->
+      <section class="panel" id="trainingAuditPanel"></section>
+
+      <!-- Execution Engine -->
+      <section class="panel" id="execPanel">
+        <h2 class="panel-title">EXECUTION ENGINE · SMART ORDER ROUTING</h2>
+        <div class="exec-row">
+          <div class="exec-algos-wrap">
+            <div class="panel-sub">ACTIVE ALGORITHMS</div>
+            <div id="execAlgos"></div>
+          </div>
+          <div class="stat-grid">
+            <div class="stat-box"><div class="stat-k">Target Size</div><div class="stat-v" id="targetSize">0.00 ETH</div></div>
+            <div class="stat-box"><div class="stat-k">Slippage Est</div><div class="stat-v" id="slippage">0.00%</div></div>
+            <div class="stat-box"><div class="stat-k">Mkt Impact</div><div class="stat-v" id="mkImpact">Low</div></div>
+            <div class="stat-box"><div class="stat-k">Fill Rate</div><div class="stat-v" id="fillRate">98.2%</div></div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- ═══ RIGHT COLUMN ═══ -->
+    <aside class="right-col">
+
+      <!-- World Model -->
+      <section class="panel" id="wmPanel">
+        <h2 class="panel-title">WORLD MODEL · DREAMER</h2>
+        <div class="panel-sub">Imagined trajectories</div>
+        <canvas id="worldModelChart" height="80"></canvas>
+        <div class="panel-sub">5-step lookahead · 8 rollouts</div>
+      </section>
+
+      <!-- Value Functions -->
+      <section class="panel" id="vfPanel">
+        <h2 class="panel-title">VALUE FUNCTIONS · BELLMAN</h2>
+        <div id="valueFns"></div>
+      </section>
+
+      <!-- TD / Return Stats -->
+      <section class="panel" id="tdPanel">
+        <h2 class="panel-title">TD LEARNING · RETURNS</h2>
+        <div id="tdStats"></div>
+      </section>
+
+      <!-- GAE / Advantage -->
+      <section class="panel" id="gaePanel">
+        <h2 class="panel-title">GAE · ADVANTAGE ESTIMATE</h2>
+        <canvas id="gaeChart" height="60"></canvas>
+        <div id="gaeStats"></div>
+      </section>
+
+      <!-- Multi-Objective -->
+      <section class="panel" id="morlPanel">
+        <h2 class="panel-title">MULTI-OBJECTIVE RL · PARETO</h2>
+        <div id="morlStats"></div>
+      </section>
+
+      <!-- Meta-RL -->
+      <section class="panel" id="metaPanel">
+        <h2 class="panel-title">META-RL · ADAPT SPEED</h2>
+        <div id="metaStats"></div>
+      </section>
+
+      <!-- Safe RL -->
+      <section class="panel" id="safePanel">
+        <h2 class="panel-title">SAFE RL · CONSTRAINTS</h2>
+        <div id="safeStats"></div>
+      </section>
+
+      <!-- Live Log -->
+      <section class="panel panel-grow" id="logPanel">
+        <h2 class="panel-title">SYSTEM LOG</h2>
+        <div class="scroll" id="sysLog"></div>
+      </section>
+
+    </aside>
+
+  </main>
+
+  <!-- Status Bar -->
+  <footer class="status-bar">
+    <div class="status-item"><span>ENGINE:</span><span class="status-ok" id="engineStatus">ONLINE</span></div>
+    <div class="status-item"><span>LATENCY:</span><span class="status-ok" id="latency">12ms</span></div>
+    <div class="status-item"><span>MODELS:</span><span class="status-ok" id="modelCount">34/34</span></div>
+    <div class="status-item"><span>UPTIME:</span><span id="uptime">00:00:00</span></div>
+    <div class="status-item"><span>TICK:</span><span id="tickCount">0</span></div>
+    <div class="status-item"><span>DRAWDOWN:</span><span class="status-ok" id="ddStatus">-1.2%</span></div>
+  </footer>
+
+  <!-- Training Modal Overlay -->
+  <div id="trainingModal" style="display:none;"></div>
+
+</body>
+</html>
