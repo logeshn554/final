@@ -1,92 +1,253 @@
 // ═════════════════════════════════════════════════════════════════════
-// BINANCE LIVE CONNECTOR (WEBSOCKET + FAST REST SYNCHRONIZATION)
-// Real-Time Live ETH/USDT: Ticker, L2 Depth20, Real-Time Trades, Multi-TF Klines
-// Zero API Keys / Authentication Required (100% Public Data)
+// MULTI-EXCHANGE RESILIENT LIVE MARKET CONNECTOR (BINANCE + COINBASE + BYBIT)
+// Real-Time Live ETH/USDT (ETH/USD): Ticker, L2 Depth, Real-Time Trades, Multi-TF Klines
+// 100% Public Data · Automatic failover if regional ISP blocks Binance (e.g. India / US)
+// True Liveness & Network Connection Supervisor (Pauses on Network Disconnect)
 // ═════════════════════════════════════════════════════════════════════
 
 import { STATE, log } from '../state.js';
 
 export class BinanceLiveStream {
   constructor() {
-    this.wsTicker = null;
+    this.ws = null;
     this.wsDepth = null;
     this.wsTrades = null;
-    this.isConnected = false;
-    this.reconnectAttempts = 0;
-    this.lastMsgTime = 0;
-    this.restFallbackTimer = null;
-    this.callbacks = { onTicker: null, onDepth: null, onTrade: null };
+    this.wsBtcTicker = null;
+    this.cbWs = null;
 
-    // Primary and fallback endpoints
-    this.restBase = 'https://api.binance.com';
-    this.restVision = 'https://data-api.binance.vision';
-    this.wsBase = 'wss://stream.binance.com:443/ws';
-    this.wsFallback = 'wss://stream.binance.com:9443/ws';
+    this.activeProvider = 'DETECTING'; // 'BINANCE' | 'COINBASE' | 'BYBIT' | 'MOCK'
+    this.isConnected = false;
+    this.lastMsgTime = 0;
+    this.watchdogTimer = null;
+    this.heartbeatTimer = null;
+    this.callbacks = { onTicker: null, onDepth: null, onTrade: null, onBtcTicker: null, onStatus: null };
+    this.onStatusChange = () => {};
+
+    // Endpoints
+    this.binanceRestUrls = [
+      'https://data-api.binance.vision',
+      'https://api.binance.com',
+      'https://api1.binance.com',
+      'https://api2.binance.com',
+    ];
+    this.binanceWsUrls = [
+      'wss://stream.binance.com:443/ws',
+      'wss://stream.binance.vision/ws',
+      'wss://stream.binance.com:9443/ws',
+    ];
+
+    this.coinbaseWsUrl = 'wss://ws-feed.exchange.coinbase.com';
+    this.coinbaseRestBase = 'https://api.exchange.coinbase.com';
+    this.bybitRestBase = 'https://api.bybit.com';
   }
 
   /**
-   * Fetch from primary Binance API with automatic mirror fallback
+   * Check if client browser is currently online
    */
-  async fetchBinance(path) {
+  isBrowserOnline() {
+    return typeof navigator !== 'undefined' ? (navigator.onLine !== false) : true;
+  }
+
+  /**
+   * Fetch with timeout helper
+   */
+  async fetchWithTimeout(url, options = {}, timeoutMs = 3000) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(`${this.restBase}${path}`, { cache: 'no-cache' });
+      const res = await fetch(url, { ...options, signal: controller.signal, cache: 'no-cache' });
+      clearTimeout(id);
       if (res.ok) return await res.json();
-      throw new Error(`HTTP ${res.status}`);
+      return null;
     } catch (e) {
-      try {
-        const fallbackRes = await fetch(`${this.restVision}${path}`, { cache: 'no-cache' });
-        if (fallbackRes.ok) return await fallbackRes.json();
-      } catch (err) {}
+      clearTimeout(id);
       return null;
     }
   }
 
   /**
-   * Fetch live 24hr ticker & update global state
+   * Fetch from Binance mirrors
    */
-  async syncTicker() {
-    const d = await this.fetchBinance('/api/v3/ticker/24hr?symbol=ETHUSDT');
-    if (d && d.lastPrice) {
-      const livePrice = parseFloat(d.lastPrice);
-      const high24 = parseFloat(d.highPrice);
-      const low24 = parseFloat(d.lowPrice);
-      const vol24 = parseFloat(d.volume);
-
-      STATE.price = livePrice;
-      STATE.high24 = high24;
-      STATE.low24 = low24;
-      STATE.prices.push(livePrice);
-      if (STATE.prices.length > 500) STATE.prices.shift();
-
-      this.lastMsgTime = Date.now();
-      if (!this.isConnected) {
-        this.isConnected = true;
-        STATE.isLiveBinance = true;
-      }
-
-      if (this.callbacks.onTicker) {
-        this.callbacks.onTicker({ livePrice, high24, low24, vol24 });
-      }
-      return livePrice;
+  async fetchBinance(path) {
+    for (const base of this.binanceRestUrls) {
+      try {
+        const data = await this.fetchWithTimeout(`${base}${path}`, {}, 2500);
+        if (data) return data;
+      } catch (e) {}
     }
     return null;
   }
 
   /**
-   * Fetch live Level 2 depth & update global order book
+   * Fetch from Coinbase API
    */
-  async syncDepth() {
-    const d = await this.fetchBinance('/api/v3/depth?symbol=ETHUSDT&limit=20');
-    if (d && d.bids && d.asks) {
-      this.applyDepthData(d.bids, d.asks);
+  async fetchCoinbase(path) {
+    try {
+      return await this.fetchWithTimeout(`${this.coinbaseRestBase}${path}`, {}, 2500);
+    } catch (e) {
+      return null;
     }
   }
 
   /**
-   * Fetch real historical candles for all 4 timeframes (1h, 30m, 15m, 3m)
+   * Fetch from Bybit API
+   */
+  async fetchBybit(path) {
+    try {
+      return await this.fetchWithTimeout(`${this.bybitRestBase}${path}`, {}, 2500);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * Synchronize ETH ticker from fastest available exchange
+   */
+  async syncTicker() {
+    if (!this.isBrowserOnline()) return null;
+
+    const t0 = performance.now();
+
+    // 1. Try Binance
+    const bData = await this.fetchBinance('/api/v3/ticker/24hr?symbol=ETHUSDT');
+    if (bData && bData.lastPrice) {
+      const livePrice = parseFloat(bData.lastPrice);
+      const high24 = parseFloat(bData.highPrice);
+      const low24 = parseFloat(bData.lowPrice);
+      const vol24 = parseFloat(bData.volume);
+      const lat = Math.round(performance.now() - t0);
+
+      this.recordLivePrice(livePrice, high24, low24, vol24, 'BINANCE', lat);
+      return livePrice;
+    }
+
+    // 2. Auto-failover: Try Coinbase
+    const cbData = await this.fetchCoinbase('/products/ETH-USD/ticker');
+    if (cbData && cbData.price) {
+      const livePrice = parseFloat(cbData.price);
+      const high24 = cbData.high_24h ? parseFloat(cbData.high_24h) : livePrice * 1.02;
+      const low24 = cbData.low_24h ? parseFloat(cbData.low_24h) : livePrice * 0.98;
+      const vol24 = cbData.volume ? parseFloat(cbData.volume) : 50000;
+      const lat = Math.round(performance.now() - t0);
+
+      this.recordLivePrice(livePrice, high24, low24, vol24, 'COINBASE', lat);
+      return livePrice;
+    }
+
+    // 3. Fallback: Try Bybit
+    const byData = await this.fetchBybit('/v5/market/tickers?category=spot&symbol=ETHUSDT');
+    if (byData?.result?.list?.[0]?.lastPrice) {
+      const row = byData.result.list[0];
+      const livePrice = parseFloat(row.lastPrice);
+      const high24 = parseFloat(row.highPrice24h);
+      const low24 = parseFloat(row.lowPrice24h);
+      const vol24 = parseFloat(row.volume24h);
+      const lat = Math.round(performance.now() - t0);
+
+      this.recordLivePrice(livePrice, high24, low24, vol24, 'BYBIT', lat);
+      return livePrice;
+    }
+
+    return null;
+  }
+
+  /**
+   * Synchronize BTC ticker from fastest available exchange
+   */
+  async syncBtcTicker() {
+    if (!this.isBrowserOnline()) return;
+
+    // 1. Try Binance
+    const bData = await this.fetchBinance('/api/v3/ticker/price?symbol=BTCUSDT');
+    if (bData && bData.price) {
+      this.recordBtcPrice(parseFloat(bData.price));
+      return;
+    }
+
+    // 2. Try Coinbase
+    const cbData = await this.fetchCoinbase('/products/BTC-USD/ticker');
+    if (cbData && cbData.price) {
+      this.recordBtcPrice(parseFloat(cbData.price));
+      return;
+    }
+
+    // 3. Try Bybit
+    const byData = await this.fetchBybit('/v5/market/tickers?category=spot&symbol=BTCUSDT');
+    if (byData?.result?.list?.[0]?.lastPrice) {
+      this.recordBtcPrice(parseFloat(byData.result.list[0].lastPrice));
+    }
+  }
+
+  /**
+   * Synchronize L2 Order Book
+   */
+  async syncDepth() {
+    if (!this.isBrowserOnline()) return;
+
+    // 1. Try Binance Depth
+    const bDepth = await this.fetchBinance('/api/v3/depth?symbol=ETHUSDT&limit=20');
+    if (bDepth && bDepth.bids && bDepth.asks) {
+      this.applyDepthData(bDepth.bids, bDepth.asks);
+      return;
+    }
+
+    // 2. Try Coinbase Depth
+    const cbDepth = await this.fetchCoinbase('/products/ETH-USD/book?level=2');
+    if (cbDepth && cbDepth.bids && cbDepth.asks) {
+      this.applyDepthData(cbDepth.bids, cbDepth.asks);
+      return;
+    }
+
+    // 3. Try Bybit Depth
+    const byDepth = await this.fetchBybit('/v5/market/orderbook?category=spot&symbol=ETHUSDT&limit=20');
+    if (byDepth?.result?.b && byDepth?.result?.a) {
+      this.applyDepthData(byDepth.result.b, byDepth.result.a);
+    }
+  }
+
+  /**
+   * Synchronize recent real trades
+   */
+  async syncTrades() {
+    if (!this.isBrowserOnline()) return;
+
+    // 1. Try Binance Trades
+    const bTrades = await this.fetchBinance('/api/v3/trades?symbol=ETHUSDT&limit=25');
+    if (Array.isArray(bTrades) && bTrades.length > 0) {
+      for (const item of bTrades) {
+        this.recordTrade({
+          time: item.time,
+          tradeId: item.id,
+          price: parseFloat(item.price),
+          size: parseFloat(item.qty),
+          side: item.isBuyerMaker ? 'SELL' : 'BUY',
+        });
+      }
+      return;
+    }
+
+    // 2. Try Coinbase Trades
+    const cbTrades = await this.fetchCoinbase('/products/ETH-USD/trades?limit=25');
+    if (Array.isArray(cbTrades) && cbTrades.length > 0) {
+      for (const item of cbTrades) {
+        this.recordTrade({
+          time: new Date(item.time).getTime(),
+          tradeId: item.trade_id,
+          price: parseFloat(item.price),
+          size: parseFloat(item.size),
+          side: item.side ? item.side.toUpperCase() : 'BUY',
+        });
+      }
+    }
+  }
+
+  /**
+   * Synchronize multi-timeframe candles
    */
   async syncKlines() {
-    const timeframes = ['1h', '30m', '15m', '3m'];
+    if (!this.isBrowserOnline()) return;
+
+    const timeframes = ['1h', '30m', '15m', '3m', '1m'];
     for (const tf of timeframes) {
       try {
         const rawKlines = await this.fetchBinance(`/api/v3/klines?symbol=ETHUSDT&interval=${tf}&limit=60`);
@@ -98,14 +259,69 @@ export class BinanceLiveStream {
         }
       } catch (e) {}
     }
-    log('Real Binance multi-timeframe candles (1h, 30m, 15m, 3m) synchronized!', 'info');
   }
 
   /**
-   * Process raw L2 order book arrays
+   * Record real live market tick into STATE
    */
+  recordLivePrice(livePrice, high24, low24, vol24, provider, latencyMs = 25) {
+    if (!livePrice || isNaN(livePrice) || livePrice <= 0) return;
+
+    STATE.price = livePrice;
+    if (high24) STATE.high24 = Math.max(STATE.high24 || 0, high24);
+    if (low24) STATE.low24 = Math.min(STATE.low24 || 999999, low24);
+
+    STATE.prices.push(livePrice);
+    if (STATE.prices.length > 500) STATE.prices.shift();
+    if (vol24) {
+      STATE.volumes.push(vol24);
+      if (STATE.volumes.length > 500) STATE.volumes.shift();
+    }
+
+    const now = Date.now();
+    this.lastMsgTime = now;
+    this.activeProvider = provider;
+
+    STATE.connection.isOnline = true;
+    STATE.connection.status = 'connected';
+    STATE.connection.provider = provider;
+    STATE.connection.latencyMs = latencyMs;
+    STATE.connection.lastHeartbeat = now;
+    STATE.connection.packetsReceived++;
+    STATE.connection.lastRealPrice = livePrice;
+    STATE.connection.errorMessage = '';
+
+    if (!this.isConnected) {
+      this.isConnected = true;
+      log(`Connected to LIVE ${provider} Market Feed (ETH price: $${livePrice.toFixed(2)})`, 'info');
+      this.onStatusChange(true, provider, latencyMs);
+    }
+
+    if (this.callbacks.onTicker) {
+      this.callbacks.onTicker({ livePrice, high24: STATE.high24, low24: STATE.low24, vol24 });
+    }
+  }
+
+  recordBtcPrice(btcPrice) {
+    if (!btcPrice || isNaN(btcPrice) || btcPrice <= 0) return;
+    STATE.btcPrice = btcPrice;
+    STATE.btcPrices.push(btcPrice);
+    if (STATE.btcPrices.length > 200) STATE.btcPrices.shift();
+    if (this.callbacks.onBtcTicker) this.callbacks.onBtcTicker(btcPrice);
+  }
+
+  recordTrade(trade) {
+    if (!trade || !trade.price) return;
+    if (!STATE.layer1.recentTrades.some(t => t.tradeId === trade.tradeId)) {
+      STATE.layer1.recentTrades.unshift(trade);
+      if (STATE.layer1.recentTrades.length > 50) STATE.layer1.recentTrades.pop();
+      if (this.callbacks.onTrade) this.callbacks.onTrade(trade);
+    }
+  }
+
   applyDepthData(rawBids, rawAsks) {
     try {
+      if (!Array.isArray(rawBids) || !Array.isArray(rawAsks)) return;
       const parsedBids = rawBids.slice(0, 10).map(b => ({
         price: parseFloat(b[0]),
         size: parseFloat(b[1]),
@@ -116,6 +332,8 @@ export class BinanceLiveStream {
         size: parseFloat(a[1]),
         orders: Math.max(1, Math.round(parseFloat(a[1]) * 0.8)),
       }));
+
+      if (parsedBids.length === 0 || parsedAsks.length === 0) return;
 
       const bestBid = parsedBids[0]?.price || STATE.price;
       const bestAsk = parsedAsks[0]?.price || STATE.price;
@@ -145,47 +363,60 @@ export class BinanceLiveStream {
   }
 
   /**
-   * Connect to Binance live streams with auto-sync and fallback REST poller
+   * Connect to real-time live market stream
    */
   async connect(onStatusChange = () => {}) {
-    log('Initiating LIVE Binance feed (ethusdt@ticker, depth20, trade)...', 'info');
+    this.onStatusChange = onStatusChange;
 
-    // 1. Instantly pull real market data via REST so UI updates without waiting for WS handshake
-    await this.syncTicker();
+    // Check physical browser connectivity first
+    if (!this.isBrowserOnline()) {
+      this.handleOffline('Browser network is offline. Live exchange connection paused.');
+      return;
+    }
+
+    STATE.connection.mode = 'live';
+    STATE.connection.status = 'connecting';
+    STATE.connection.errorMessage = '';
+    log('Connecting to real live market exchanges (Binance / Coinbase / Bybit)...', 'info');
+
+    // 1. Initial REST probe to immediately verify network and get live prices
+    const initialPrice = await this.syncTicker();
+    await this.syncBtcTicker();
     await this.syncDepth();
-    this.syncKlines(); // background sync
+    await this.syncTrades();
+    this.syncKlines();
 
-    onStatusChange(true);
-    this.isConnected = true;
-    STATE.isLiveBinance = true;
+    if (!initialPrice && !this.isBrowserOnline()) {
+      this.handleOffline('Unable to reach live market exchanges. Please check your internet connection.');
+      return;
+    }
 
-    // 2. Open WebSockets on standard port 443
-    this.initWebSockets(onStatusChange);
+    // 2. Start WebSocket feeds (Binance primary with Coinbase fallback)
+    this.initWebSockets();
 
-    // 3. Heartbeat backup poller: if WS has quiet period > 2s, poll REST so data NEVER freezes
-    if (this.restFallbackTimer) clearInterval(this.restFallbackTimer);
-    this.restFallbackTimer = setInterval(async () => {
-      const elapsed = Date.now() - this.lastMsgTime;
-      if (elapsed > 2000) {
-        await this.syncTicker();
-        await this.syncDepth();
-      }
-    }, 1000);
+    // 3. Start Connection Supervisor / Heartbeat watchdog
+    this.startSupervisor();
   }
 
-  initWebSockets(onStatusChange) {
+  /**
+   * Initialize WebSockets with automatic failover
+   */
+  initWebSockets() {
+    this.cleanupWebSockets();
+
+    // Try Binance WebSockets first
+    let binanceWsFailed = false;
+    const wsBase = this.binanceWsUrls[0];
+
     try {
-      // 1. Live Ticker WebSocket
-      this.wsTicker = new WebSocket(`${this.wsBase}/ethusdt@ticker`);
-      this.wsTicker.onopen = () => {
-        this.isConnected = true;
-        STATE.isLiveBinance = true;
+      this.ws = new WebSocket(`${wsBase}/ethusdt@ticker`);
+      this.ws.onopen = () => {
+        this.activeProvider = 'BINANCE';
         this.lastMsgTime = Date.now();
-        log('Binance WS connected: ethusdt@ticker LIVE (Port 443)', 'info');
-        onStatusChange(true);
+        log('Binance Live WebSocket connected (Port 443)', 'info');
       };
 
-      this.wsTicker.onmessage = (event) => {
+      this.ws.onmessage = (event) => {
         try {
           const d = JSON.parse(event.data);
           if (d && d.c) {
@@ -193,38 +424,31 @@ export class BinanceLiveStream {
             const high24 = parseFloat(d.h);
             const low24 = parseFloat(d.l);
             const vol24 = parseFloat(d.q);
-
-            STATE.price = livePrice;
-            STATE.high24 = high24;
-            STATE.low24 = low24;
-            STATE.prices.push(livePrice);
-            if (STATE.prices.length > 500) STATE.prices.shift();
-
-            this.lastMsgTime = Date.now();
-            if (this.callbacks.onTicker) {
-              this.callbacks.onTicker({ livePrice, high24, low24, vol24 });
-            }
+            const lat = d.E ? Math.max(1, Math.min(999, Date.now() - d.E)) : 18;
+            this.recordLivePrice(livePrice, high24, low24, vol24, 'BINANCE', lat);
           }
         } catch (e) {}
       };
 
-      this.wsTicker.onerror = () => {
-        // Silent fallback to REST backup
+      this.ws.onerror = () => {
+        if (!binanceWsFailed && (!this.isConnected || this.activeProvider !== 'BINANCE')) {
+          binanceWsFailed = true;
+          this.initCoinbaseWebSocket();
+        }
       };
 
-      this.wsTicker.onclose = () => {
-        // Attempt reconnect after 3 seconds if still live
-        if (STATE.isLiveBinance) {
+      this.ws.onclose = () => {
+        if (STATE.connection.mode === 'live' && this.isBrowserOnline() && this.activeProvider === 'BINANCE') {
           setTimeout(() => {
-            if (STATE.isLiveBinance && (!this.wsTicker || this.wsTicker.readyState > 1)) {
-              this.initWebSockets(onStatusChange);
+            if (STATE.connection.mode === 'live' && this.isBrowserOnline()) {
+              this.syncTicker();
             }
           }, 3000);
         }
       };
 
-      // 2. Live Level 2 Depth WebSocket
-      this.wsDepth = new WebSocket(`${this.wsBase}/ethusdt@depth20@100ms`);
+      // Depth WS
+      this.wsDepth = new WebSocket(`${wsBase}/ethusdt@depth20@100ms`);
       this.wsDepth.onmessage = (event) => {
         try {
           const d = JSON.parse(event.data);
@@ -235,44 +459,206 @@ export class BinanceLiveStream {
         } catch (e) {}
       };
 
-      // 3. Live Trades WebSocket
-      this.wsTrades = new WebSocket(`${this.wsBase}/ethusdt@trade`);
+      // Trades WS
+      this.wsTrades = new WebSocket(`${wsBase}/ethusdt@trade`);
       this.wsTrades.onmessage = (event) => {
         try {
           const d = JSON.parse(event.data);
           if (d && d.p) {
-            const trade = {
+            this.recordTrade({
               time: d.T,
+              tradeId: d.t,
               price: parseFloat(d.p),
               size: parseFloat(d.q),
               side: d.m ? 'SELL' : 'BUY',
-            };
-            STATE.layer1.recentTrades.unshift(trade);
-            if (STATE.layer1.recentTrades.length > 50) STATE.layer1.recentTrades.pop();
-
+            });
             this.lastMsgTime = Date.now();
-            if (this.callbacks.onTrade) {
-              this.callbacks.onTrade(trade);
-            }
           }
         } catch (e) {}
       };
 
+      // BTC Ticker WS
+      this.wsBtcTicker = new WebSocket(`${wsBase}/btcusdt@ticker`);
+      this.wsBtcTicker.onmessage = (event) => {
+        try {
+          const d = JSON.parse(event.data);
+          if (d && d.c) this.recordBtcPrice(parseFloat(d.c));
+        } catch (e) {}
+      };
+
     } catch (e) {
-      log(`WebSocket notice: Running resilient REST stream mode`, 'info');
+      this.initCoinbaseWebSocket();
     }
+
+    // Set a watchdog: if no message arrives from Binance within 3.5s, switch to Coinbase
+    if (this.watchdogTimer) clearTimeout(this.watchdogTimer);
+    this.watchdogTimer = setTimeout(() => {
+      if (Date.now() - this.lastMsgTime > 3500 && this.isBrowserOnline() && this.cbWs === null) {
+        log('Binance live stream quiet/restricted. Switching to Coinbase Exchange Feed...', 'info');
+        this.initCoinbaseWebSocket();
+      }
+    }, 3500);
   }
 
   /**
-   * Disconnect WebSocket streams
+   * Coinbase Exchange WebSocket (Unblocked globally, zero CORS issues, no auth)
+   */
+  initCoinbaseWebSocket() {
+    if (this.cbWs && this.cbWs.readyState <= 1) return;
+
+    try {
+      this.cbWs = new WebSocket(this.coinbaseWsUrl);
+
+      this.cbWs.onopen = () => {
+        const subMsg = {
+          type: 'subscribe',
+          product_ids: ['ETH-USD', 'BTC-USD'],
+          channels: ['ticker', 'matches', 'level2_batch'],
+        };
+        this.cbWs.send(JSON.stringify(subMsg));
+        log('Coinbase Exchange Live WebSocket connected & subscribed!', 'info');
+      };
+
+      this.cbWs.onmessage = (event) => {
+        try {
+          const d = JSON.parse(event.data);
+          if (!d) return;
+
+          if (d.type === 'ticker' && d.product_id === 'ETH-USD' && d.price) {
+            const livePrice = parseFloat(d.price);
+            const high24 = d.high_24h ? parseFloat(d.high_24h) : livePrice * 1.02;
+            const low24 = d.low_24h ? parseFloat(d.low_24h) : livePrice * 0.98;
+            const vol24 = d.volume_24h ? parseFloat(d.volume_24h) : 50000;
+            const packetTime = d.time ? new Date(d.time).getTime() : Date.now();
+            const lat = Math.max(1, Math.min(999, Date.now() - packetTime));
+
+            this.recordLivePrice(livePrice, high24, low24, vol24, 'COINBASE', lat);
+          } else if (d.type === 'ticker' && d.product_id === 'BTC-USD' && d.price) {
+            this.recordBtcPrice(parseFloat(d.price));
+          } else if (d.type === 'match' && d.product_id === 'ETH-USD') {
+            this.recordTrade({
+              time: new Date(d.time).getTime(),
+              tradeId: d.trade_id,
+              price: parseFloat(d.price),
+              size: parseFloat(d.size),
+              side: d.side ? d.side.toUpperCase() : 'BUY',
+            });
+          } else if (d.type === 'snapshot' && d.product_id === 'ETH-USD' && d.bids && d.asks) {
+            this.applyDepthData(d.bids, d.asks);
+          }
+        } catch (e) {}
+      };
+
+      this.cbWs.onerror = () => {};
+      this.cbWs.onclose = () => {
+        if (STATE.connection.mode === 'live' && this.isBrowserOnline() && this.activeProvider === 'COINBASE') {
+          setTimeout(() => {
+            if (STATE.connection.mode === 'live' && this.isBrowserOnline()) {
+              this.initCoinbaseWebSocket();
+            }
+          }, 3000);
+        }
+      };
+    } catch (e) {}
+  }
+
+  /**
+   * Heartbeat supervisor: continuously validates real network packets
+   */
+  startSupervisor() {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+
+    this.heartbeatTimer = setInterval(async () => {
+      // 1. Check browser network status
+      if (!this.isBrowserOnline()) {
+        this.handleOffline('Internet connection disconnected. Live market stream paused.');
+        return;
+      }
+
+      // 2. If in live mode, check if we haven't received a live packet in > 4.5 seconds
+      const elapsed = Date.now() - this.lastMsgTime;
+      if (elapsed > 4500) {
+        // Feed is quiet or disconnected: poll REST backup
+        const polledPrice = await this.syncTicker();
+        await this.syncDepth();
+        await this.syncBtcTicker();
+
+        if (!polledPrice && elapsed > 10000) {
+          // Both WS and REST are unresponsive: mark as disconnected
+          this.isConnected = false;
+          STATE.connection.status = 'disconnected';
+          STATE.connection.errorMessage = 'Live feed disconnected. Retrying...';
+          this.onStatusChange(false, 'disconnected');
+        }
+      }
+
+      // 3. Periodically refresh real multi-timeframe candles (1m, 3m, 15m, 30m, 1h)
+      this._klineSyncCounter = (this._klineSyncCounter || 0) + 1;
+      if (this._klineSyncCounter >= 8) {
+        this._klineSyncCounter = 0;
+        this.syncKlines();
+      }
+    }, 2000);
+  }
+
+  /**
+   * Handle when network connection goes offline
+   */
+  handleOffline(reason = 'Internet disconnected') {
+    this.isConnected = false;
+    STATE.connection.isOnline = false;
+    STATE.connection.status = 'offline';
+    STATE.connection.errorMessage = reason;
+    this.cleanupWebSockets();
+
+    this.onStatusChange(false, 'offline');
+    log(`🔴 ${reason}`, 'warn');
+  }
+
+  /**
+   * Clean up all WebSocket connections
+   */
+  cleanupWebSockets() {
+    if (this.ws) { try { this.ws.close(); } catch(e){} this.ws = null; }
+    if (this.wsDepth) { try { this.wsDepth.close(); } catch(e){} this.wsDepth = null; }
+    if (this.wsTrades) { try { this.wsTrades.close(); } catch(e){} this.wsTrades = null; }
+    if (this.wsBtcTicker) { try { this.wsBtcTicker.close(); } catch(e){} this.wsBtcTicker = null; }
+    if (this.cbWs) { try { this.cbWs.close(); } catch(e){} this.cbWs = null; }
+  }
+
+  /**
+   * Pause live stream (e.g. user toggled off or network went down)
+   */
+  pause() {
+    this.cleanupWebSockets();
+    if (this.watchdogTimer) clearTimeout(this.watchdogTimer);
+    this.isConnected = false;
+    STATE.connection.status = 'disconnected';
+  }
+
+  /**
+   * Reconnect when network returns
+   */
+  reconnect() {
+    log('Network reconnected! Re-establishing live market feed...', 'info');
+    STATE.connection.isOnline = true;
+    STATE.connection.status = 'connecting';
+    this.connect(this.onStatusChange);
+  }
+
+  /**
+   * Disconnect completely
    */
   disconnect(onStatusChange = () => {}) {
-    if (this.wsTicker) { this.wsTicker.close(); this.wsTicker = null; }
-    if (this.wsDepth) { this.wsDepth.close(); this.wsDepth = null; }
-    if (this.wsTrades) { this.wsTrades.close(); this.wsTrades = null; }
-    if (this.restFallbackTimer) { clearInterval(this.restFallbackTimer); this.restFallbackTimer = null; }
-    this.isConnected = false;
+    this.pause();
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+    STATE.connection.status = 'disconnected';
+    STATE.connection.provider = 'DISCONNECTED';
     onStatusChange(false);
-    log('Binance stream paused.', 'info');
+    log('Live market stream disconnected.', 'info');
   }
 }
+
+// Alias for universal naming
+export { BinanceLiveStream as LiveMarketStream };

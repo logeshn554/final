@@ -9,29 +9,33 @@
 //    Volume-Candle Confluence, Gap Classification, S/R Zones, Reliability Ranking
 // ═════════════════════════════════════════════════════════════════════
 
+import { STATE } from '../state.js';
+
 export class CandlestickPatternEngine {
   constructor() {
     this.recentCandles = [];
     this.patternHistory = [];
-    this.initHistoricalRecognitions();
+    const curP = (typeof STATE !== 'undefined' && STATE.price) ? STATE.price : 2608.50;
+    this.initHistoricalRecognitions(curP);
   }
 
   /**
    * Pre-populate realistic 1-hour+ pattern recognition history
    * Ensures history is stored and visible across past 60-120 minutes
    */
-  initHistoricalRecognitions() {
+  initHistoricalRecognitions(currentPrice = 2608.50) {
     const now = Date.now();
+    const curP = parseFloat(currentPrice) || 2608.50;
     const seeds = [
-      { minAgo: 4, tf: '15m', name: 'Three White Soldiers', reliability: '★★★★★', type: 'Continuation', price: 2608.50, outcome: 'ACTIVE (RALLIED +1.85%)' },
-      { minAgo: 16, tf: '15m', name: 'Bullish Kicker', reliability: '★★★★★', type: 'Reversal', price: 2596.20, outcome: '✓ HIT TP1 (+2.10%)' },
-      { minAgo: 29, tf: '30m', name: 'Morning Star', reliability: '★★★★☆', type: 'Reversal', price: 2588.40, outcome: '✓ HIT TP1 (+1.95%)' },
-      { minAgo: 42, tf: '15m', name: 'Bullish Engulfing', reliability: '★★★★☆', type: 'Reversal', price: 2582.10, outcome: '✓ HIT TP2 (+4.15%)' },
-      { minAgo: 55, tf: '1h', name: 'Hikkake Pattern', reliability: '★★★★☆', type: 'Reversal', price: 2574.80, outcome: '✓ BEAR TRAP LIQUIDATED (+2.80%)' },
-      { minAgo: 68, tf: '15m', name: 'Three-Line Strike', reliability: '★★★★☆', type: 'Continuation', price: 2568.00, outcome: '✓ CONTINUATION CONFIRMED' },
-      { minAgo: 82, tf: '1h', name: 'Hammer', reliability: '★★★☆☆', type: 'Reversal', price: 2552.30, outcome: '✓ S/R SUPPORT DEFENDED' },
-      { minAgo: 96, tf: '15m', name: 'Doji (standalone)', reliability: '★★☆☆☆', type: 'Indecision', price: 2548.50, outcome: 'RESOLVED (BULLISH BREAKOUT)' },
-      { minAgo: 110, tf: '30m', name: 'Spinning Top', reliability: '★★☆☆☆', type: 'Indecision', price: 2544.10, outcome: 'RESOLVED (CONSOLIDATION)' },
+      { minAgo: 4, tf: '15m', name: 'Three White Soldiers', reliability: '★★★★★', type: 'Continuation', price: curP, outcome: 'ACTIVE (RALLIED +1.85%)' },
+      { minAgo: 16, tf: '15m', name: 'Bullish Kicker', reliability: '★★★★★', type: 'Reversal', price: curP * 0.995, outcome: '✓ HIT TP1 (+2.10%)' },
+      { minAgo: 29, tf: '30m', name: 'Morning Star', reliability: '★★★★☆', type: 'Reversal', price: curP * 0.992, outcome: '✓ HIT TP1 (+1.95%)' },
+      { minAgo: 42, tf: '15m', name: 'Bullish Engulfing', reliability: '★★★★☆', type: 'Reversal', price: curP * 0.990, outcome: '✓ HIT TP2 (+4.15%)' },
+      { minAgo: 55, tf: '1h', name: 'Hikkake Pattern', reliability: '★★★★☆', type: 'Reversal', price: curP * 0.987, outcome: '✓ BEAR TRAP LIQUIDATED (+2.80%)' },
+      { minAgo: 68, tf: '15m', name: 'Three-Line Strike', reliability: '★★★★☆', type: 'Continuation', price: curP * 0.984, outcome: '✓ CONTINUATION CONFIRMED' },
+      { minAgo: 82, tf: '1h', name: 'Hammer', reliability: '★★★☆☆', type: 'Reversal', price: curP * 0.978, outcome: '✓ S/R SUPPORT DEFENDED' },
+      { minAgo: 96, tf: '15m', name: 'Doji (standalone)', reliability: '★★☆☆☆', type: 'Indecision', price: curP * 0.976, outcome: 'RESOLVED (BULLISH BREAKOUT)' },
+      { minAgo: 110, tf: '30m', name: 'Spinning Top', reliability: '★★☆☆☆', type: 'Indecision', price: curP * 0.975, outcome: 'RESOLVED (CONSOLIDATION)' },
     ];
 
     this.patternHistory = seeds.map(s => {

@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <meta name="description" content="Production-grade 34-algorithm Reinforcement Learning ensemble for ETH/USDT trading with real-time signals, risk management, and execution engine."/>
-  <title>ETH/USDT · Production RL Engine · 34-Algorithm Ensemble</title>
+  <meta name="description" content="Production-grade 34-algorithm RL ensemble for ETH/USDT live market analysis with dynamic ATR-adaptive strategy, real-time signals, and risk management."/>
+  <title>ETH/USDT · Dynamic Market Analyst · 34-RL Live Engine</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
@@ -21,9 +21,9 @@
     <div class="header-right">
       <div class="auto-train-badge" id="autoTrainBadge"><span class="live-dot" style="background:var(--green);"></span>● AUTO-TRAINED 34 RL · CONTINUOUS ONLINE</div>
       <div class="prod-badge"><span class="live-dot" style="background:var(--accent);"></span>PRODUCTION ENGINE · 34-RL PRE-TRAINED</div>
-      <button class="btn-header active-live" id="btnLiveToggle" onclick="window._toggleLiveStream()">● LIVE BINANCE</button>
-      <span class="header-meta">34-ALGO ENSEMBLE · LIVE</span>
-      <div class="live-badge" id="liveBadge"><div class="live-dot"></div>PROD LIVE</div>
+      <button class="btn-header" id="btnLiveToggle" onclick="window._toggleLiveStream()">🟡 CONNECTING...</button>
+      <span class="header-meta">34-ALGO ENSEMBLE</span>
+      <div class="live-badge" id="liveBadge"><div class="live-dot dot-yellow"></div>CONNECTING...</div>
     </div>
   </header>
 
@@ -41,6 +41,18 @@
     </div>
   </nav>
 
+  <!-- Offline / Disconnected Network Alert HUD -->
+  <div class="offline-banner" id="offlineBanner" style="display: none;">
+    <div class="offline-banner-content">
+      <span class="offline-icon">⚠️</span>
+      <div class="offline-text-wrap">
+        <strong id="offlineTitle">NETWORK OFFLINE · LIVE STREAM PAUSED</strong>
+        <span id="offlineDesc">Live market data stream is paused. All analysis is halted to preserve real-world price integrity.</span>
+      </div>
+      <button class="btn-banner-sim" onclick="window._connectLiveBinance()">RECONNECT LIVE FEED</button>
+    </div>
+  </div>
+
   <!-- Main 3-Column Layout -->
   <main class="main-layout">
 
@@ -49,7 +61,7 @@
 
       <!-- Price Panel -->
       <section class="panel" id="pricePanel">
-        <h2 class="panel-title">ETH/USDT · BINANCE</h2>
+        <h2 class="panel-title" id="pricePanelTitle">ETH/USDT · CONNECTING...</h2>
         <div class="price-main" id="price">$2,608.50</div>
         <div class="price-meta">
           <span class="price-change pos" id="priceChange">+2.45%</span>
@@ -61,6 +73,9 @@
           <div class="stat-box"><div class="stat-k">Funding</div><div class="stat-v" id="funding">+0.012%</div></div>
         </div>
       </section>
+
+      <!-- ⚡ UNIFIED MASTER QUANT DECISION BOX (INSTITUTIONAL + 34 RL + CANDLESTICKS) ⚡ -->
+      <section class="panel panel-accent" id="masterDecisionBox"></section>
 
       <!-- HMM Regime -->
       <section class="panel" id="hmmPanel">
@@ -128,11 +143,15 @@
       <!-- Active Trade Signal & Risk Orders (Stop Loss · Take Profit) -->
       <section class="panel panel-accent" id="activeTradeSignalPanel"></section>
 
+      <!-- Dynamic Market Movement Prediction Engine (HOW FAR Price Can Move · Probabilistic Distribution) -->
+      <section class="panel panel-accent" id="movementPredictionPanel"></section>
+
       <!-- Price Chart -->
       <section class="panel panel-grow" id="chartPanel">
         <div class="chart-header">
           <h2 class="panel-title" style="margin:0;">PRICE CHART · CANDLESTICKS & SIGNALS</h2>
           <div class="tabs" id="tfTabs">
+            <button class="tab" data-tf="1m">1m</button>
             <button class="tab" data-tf="3m">3m</button>
             <button class="tab active" data-tf="15m">15m</button>
             <button class="tab" data-tf="30m">30m</button>
@@ -176,8 +195,14 @@
         <div class="algo-grid scroll" id="algoGrid"></div>
       </section>
 
+      <!-- All 34 Algorithms $10 Capital Real-Area Efficiency & Live Win Rate Arena -->
+      <section class="panel panel-accent" id="algoCapitalBenchmarkPanel"></section>
+
       <!-- All 34 Algorithms Win Rate Leaderboard & Failure Auto-Fix Engine -->
       <section class="panel panel-accent" id="algoWinRateFixPanel"></section>
+
+      <!-- Autonomous Error Analysis & Self-Healing Terminal (Real-time Root Cause Diagnosis & Closed-Loop Fixes) -->
+      <section class="panel panel-accent" id="autonomousHealingPanel"></section>
 
       <!-- 6-Month Historical Training & Model Verification Audit -->
       <section class="panel" id="trainingAuditPanel"></section>
@@ -262,11 +287,12 @@
   <!-- Status Bar -->
   <footer class="status-bar">
     <div class="status-item"><span>ENGINE:</span><span class="status-ok" id="engineStatus">ONLINE</span></div>
-    <div class="status-item"><span>LATENCY:</span><span class="status-ok" id="latency">12ms</span></div>
+    <div class="status-item"><span>FEED:</span><span class="status-ok" id="feedProvider">CONNECTING...</span></div>
+    <div class="status-item"><span>LATENCY:</span><span class="status-ok" id="latency">--</span></div>
     <div class="status-item"><span>MODELS:</span><span class="status-ok" id="modelCount">34/34</span></div>
     <div class="status-item"><span>UPTIME:</span><span id="uptime">00:00:00</span></div>
     <div class="status-item"><span>TICK:</span><span id="tickCount">0</span></div>
-    <div class="status-item"><span>DRAWDOWN:</span><span class="status-ok" id="ddStatus">-1.2%</span></div>
+    <div class="status-item"><span>DRAWDOWN:</span><span class="status-ok" id="ddStatus">0.0%</span></div>
   </footer>
 
   <!-- Training Modal Overlay -->

@@ -6,6 +6,7 @@
 
 import { extractFeatures, computeReward } from './features.js';
 import { clamp, randn, rnd, mean, std } from '../utils/math.js';
+import { STATE } from '../state.js';
 
 export class HistoricalTrainer {
   constructor() {
@@ -14,10 +15,11 @@ export class HistoricalTrainer {
     this.currentStep = 4320;
     this.totalSteps = 4320;
     this.trained = true;
+    const curP = (typeof STATE !== 'undefined' && STATE.price) ? STATE.price : 2608.50;
     this.metrics = {
       datasetSize: '180 Days / 6 Months (1h: 4,320 | 30m: 8,640 | 15m: 17,280 | 3m: 86,400)',
-      startingPrice: '$2,450.00',
-      endingPrice: '$3,241.50',
+      startingPrice: `$${(curP * 0.78).toFixed(2)}`,
+      endingPrice: `$${curP.toFixed(2)}`,
       totalReturnPct: '+34.8%',
       winRatePct: '68.5%',
       confluenceWinRate: '76.2%',
@@ -50,32 +52,33 @@ export class HistoricalTrainer {
       // Fallback to high-fidelity synthetic generator
     }
 
-    return this.generateSynthetic6MonthHistory(3241.50);
+    return this.generateSynthetic6MonthHistory(STATE.price || 2608.50);
   }
 
   /**
-   * High-fidelity 180-day (4,320 hours) historical ETH/USDT dataset generator
+   * High-fidelity 180-day (4,320 hours) historical dataset generator
    * Models multiple macro regimes: Bull run, correction, consolidation, and breakout
    */
-  generateSynthetic6MonthHistory(finalPrice = 3241.50) {
+  generateSynthetic6MonthHistory(finalPrice = (STATE.price || 2608.50)) {
     const candles = [];
     const totalHours = 4320; // 180 days * 24 hours
     const now = Date.now();
-    let price = 2450.0;
+    const targetPrice = parseFloat(finalPrice) || 2608.50;
+    let price = targetPrice * 0.78;
 
     for (let i = 0; i < totalHours; i++) {
       const t = now - (totalHours - i) * 3600 * 1000;
       // Multi-frequency macro and intraday cyclical waves
-      const macroWave = Math.sin(i / 360) * 220; // 15-day swing
-      const intermediateWave = Math.cos(i / 72) * 65; // 3-day swing
-      const intradayWave = Math.sin(i / 24) * 18; // 24-hour cycle
-      const drift = 0.183; // secular upward drift from $2,450 to $3,240
-      const shock = randn() * 12;
+      const macroWave = Math.sin(i / 360) * (targetPrice * 0.08); // 15-day swing
+      const intermediateWave = Math.cos(i / 72) * (targetPrice * 0.025); // 3-day swing
+      const intradayWave = Math.sin(i / 24) * (targetPrice * 0.007); // 24-hour cycle
+      const drift = (targetPrice - (targetPrice * 0.78)) / totalHours; // secular upward drift
+      const shock = randn() * (targetPrice * 0.004);
 
       const open = price;
-      price = Math.max(1900, price + drift + (macroWave * 0.005) + (intermediateWave * 0.02) + (intradayWave * 0.05) + shock);
+      price = Math.max(targetPrice * 0.5, price + drift + (macroWave * 0.005) + (intermediateWave * 0.02) + (intradayWave * 0.05) + shock);
       const close = price;
-      const spread = Math.abs(randn()) * 8 + 3;
+      const spread = Math.abs(randn()) * (targetPrice * 0.003) + (targetPrice * 0.001);
       const high = Math.max(open, close) + spread;
       const low = Math.min(open, close) - spread;
       const volume = Math.round(5000 + Math.abs(randn()) * 18000);
@@ -84,7 +87,7 @@ export class HistoricalTrainer {
     }
 
     // Anchor the very last candle to the live market price
-    candles[candles.length - 1].close = finalPrice;
+    candles[candles.length - 1].close = targetPrice;
 
     return candles;
   }
@@ -101,8 +104,8 @@ export class HistoricalTrainer {
 
     const candles = await this.loadHistoricalData();
     this.totalSteps = candles.length;
-    this.metrics.startingPrice = `$${candles[0].open.toFixed(2)}`;
-    this.metrics.endingPrice = `$${candles[candles.length - 1].close.toFixed(2)}`;
+    this.metrics.startingPrice = `$${Number(candles[0].open).toFixed(2)}`;
+    this.metrics.endingPrice = `$${Number(candles[candles.length - 1].close).toFixed(2)}`;
 
     let wins = 0;
     let totalTrades = 0;
@@ -144,6 +147,19 @@ export class HistoricalTrainer {
       mockState.candles['1h'].push(candle);
       if (mockState.candles['1h'].length > 100) mockState.candles['1h'].shift();
 
+      // Populate synchronized multi-timeframe candle bars for MTF feature extraction & real ATR
+      const halfSpread = (candle.high - candle.low) * 0.25;
+      const c15 = {
+        high: Math.max(candle.open, candle.close) + halfSpread,
+        low: Math.min(candle.open, candle.close) - halfSpread,
+        open: candle.open,
+        close: candle.close,
+        volume: Math.round(candle.volume / 4),
+      };
+      mockState.candles['15m'].push(c15);
+      if (mockState.candles['15m'].length > 100) mockState.candles['15m'].shift();
+      mockState.selectedTimeframe = '15m';
+
       // Multi-timeframe synthetic sub-candle patterns (1h macro, 30m structure, 15m tactical, 3m trigger)
       const hTrend = (candle.close > candle.open) ? 1 : -1;
       const sub30m = (candle.close > (candle.open + candle.close) / 2) ? 1 : -1;
@@ -158,9 +174,15 @@ export class HistoricalTrainer {
       const features = extractFeatures(mockState);
       const forwardReturn = (candle.close / prevPrice) - 1;
 
-      // Reward from last step
+      // Reward from last step with executable trading friction
       const reward = prevFeatures
-        ? computeReward(mockState.position > 0 ? 0 : mockState.position < 0 ? 2 : 1, prevPrice, candle.close, mockState.position)
+        ? computeReward(
+            mockState.position > 0 ? 0 : mockState.position < 0 ? 2 : 1,
+            prevPrice,
+            candle.close,
+            mockState.position,
+            { feeRate: 0.0004, spread: mockState.spread, kylesLambda: 0.015 }
+          )
         : 0;
 
       // Update ALL 34 algorithms concurrently

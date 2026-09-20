@@ -1,19 +1,21 @@
 // ═══════════════════════════════════════════════════════
-// MULTI-TIMEFRAME ENGINE (1h, 30m, 15m, 3m)
-// Manages synchronized candle series across 4 timeframes
+// MULTI-TIMEFRAME ENGINE (1h, 30m, 15m, 3m, 1m)
+// Manages synchronized candle series across 5 timeframes
 // Computes Multi-Timeframe Candlestick Pattern Confluence
 // ═══════════════════════════════════════════════════════
 
 import { CandlestickPatternEngine } from './candlesticks.js';
-import { clamp, mean, std } from '../utils/math.js';
+import { clamp } from '../utils/math.js';
+import { STATE } from '../state.js';
 
-export const TIMEFRAMES = ['3m', '15m', '30m', '1h'];
+export const TIMEFRAMES = ['1h', '30m', '15m', '3m', '1m'];
 
 export const TF_SECONDS = {
-  '3m': 180,
-  '15m': 900,
-  '30m': 1800,
   '1h': 3600,
+  '30m': 1800,
+  '15m': 900,
+  '3m': 180,
+  '1m': 60,
 };
 
 export class MultiTimeframeEngine {
@@ -22,14 +24,16 @@ export class MultiTimeframeEngine {
 
     // In-memory candle stores for each timeframe
     this.candles = {
-      '3m': [],
-      '15m': [],
-      '30m': [],
       '1h': [],
+      '30m': [],
+      '15m': [],
+      '3m': [],
+      '1m': [],
     };
 
     // Active candle being built
     this.activeCandles = {
+      '1m': null,
       '3m': null,
       '15m': null,
       '30m': null,
@@ -43,9 +47,11 @@ export class MultiTimeframeEngine {
       '30m': { score: 0, trend: 'FLAT', patterns: [] },
       '15m': { score: 0, trend: 'FLAT', patterns: [] },
       '3m': { score: 0, trend: 'FLAT', patterns: [] },
+      '1m': { score: 0, trend: 'FLAT', patterns: [] },
     };
 
-    this.initHistoricalCandles(2608.00);
+    const initialP = (typeof STATE !== 'undefined' && STATE.price) ? STATE.price : 2608.00;
+    this.initHistoricalCandles(initialP);
   }
 
   /**
@@ -66,12 +72,13 @@ export class MultiTimeframeEngine {
   /**
    * Seed realistic initial historical candles across all 4 timeframes
    */
-  initHistoricalCandles(currentPrice = 2608.00) {
-    const counts = { '3m': 60, '15m': 60, '30m': 60, '1h': 60 };
+  initHistoricalCandles(currentPrice = ((typeof STATE !== 'undefined' && STATE.price) ? STATE.price : 2608.00)) {
+    const counts = { '1m': 60, '3m': 60, '15m': 60, '30m': 60, '1h': 60 };
     const now = Date.now();
+    const baseP = parseFloat(currentPrice) || 2608.00;
 
     for (const tf of TIMEFRAMES) {
-      let p = currentPrice - (Math.random() - 0.5) * 20;
+      let p = baseP - (Math.random() - 0.5) * (baseP * 0.008);
       const stepSec = TF_SECONDS[tf];
       this.candles[tf] = [];
 
@@ -79,7 +86,7 @@ export class MultiTimeframeEngine {
         const t = now - (counts[tf] - i) * stepSec * 1000;
         const drift = (Math.sin(i / 8) + Math.cos(i / 14)) * (stepSec / 100);
         const open = p;
-        p = Math.max(2200, p + drift + (Math.random() - 0.48) * (stepSec / 80));
+        p = Math.max(baseP * 0.5, p + drift + (Math.random() - 0.48) * (stepSec / 80));
         const close = p;
         const high = Math.max(open, close) + Math.random() * (stepSec / 120) + 1;
         const low = Math.min(open, close) - Math.random() * (stepSec / 120) - 1;
@@ -98,7 +105,7 @@ export class MultiTimeframeEngine {
   }
 
   /**
-   * Process a new live price tick and update all 4 timeframes
+   * Process a new live price tick and update all 5 timeframes
    * @param {number} price Current mid price
    * @param {number} volume Tick volume
    */
@@ -159,28 +166,30 @@ export class MultiTimeframeEngine {
     }
 
     // ── MULTI-TIMEFRAME CONFLUENCE SYNTHESIS ──
-    // 35% 1h (Macro) + 30% 30m (Structure) + 20% 15m (Momentum) + 15% 3m (Execution Trigger)
+    // 30% 1h (Macro) + 25% 30m (Structure) + 20% 15m (Momentum) + 15% 3m (Execution Trigger) + 10% 1m (Micro-Scalp)
     const s1h = this.tfAnalysis['1h'].score;
     const s30m = this.tfAnalysis['30m'].score;
     const s15m = this.tfAnalysis['15m'].score;
     const s3m = this.tfAnalysis['3m'].score;
+    const s1m = this.tfAnalysis['1m'].score;
 
     this.confluenceScore = clamp(
-      0.35 * s1h +
-      0.30 * s30m +
+      0.30 * s1h +
+      0.25 * s30m +
       0.20 * s15m +
-      0.15 * s3m,
+      0.15 * s3m +
+      0.10 * s1m,
       -1, 1
     );
 
-    // Confluence Alignment check
-    const bullishCount = [s1h > 0.1, s30m > 0.1, s15m > 0.1, s3m > 0.1].filter(Boolean).length;
-    const bearishCount = [s1h < -0.1, s30m < -0.1, s15m < -0.1, s3m < -0.1].filter(Boolean).length;
+    // Confluence Alignment check across all 5 timeframes
+    const bullishCount = [s1h > 0.1, s30m > 0.1, s15m > 0.1, s3m > 0.1, s1m > 0.1].filter(Boolean).length;
+    const bearishCount = [s1h < -0.1, s30m < -0.1, s15m < -0.1, s3m < -0.1, s1m < -0.1].filter(Boolean).length;
 
-    if (bullishCount >= 3) {
-      this.alignment = bullishCount === 4 ? 'STRONG BULLISH CONFLUENCE (4/4)' : 'BULLISH CONFLUENCE (3/4)';
-    } else if (bearishCount >= 3) {
-      this.alignment = bearishCount === 4 ? 'STRONG BEARISH CONFLUENCE (4/4)' : 'BEARISH CONFLUENCE (3/4)';
+    if (bullishCount >= 4) {
+      this.alignment = bullishCount === 5 ? 'STRONG BULLISH CONFLUENCE (5/5)' : 'BULLISH CONFLUENCE (4/5)';
+    } else if (bearishCount >= 4) {
+      this.alignment = bearishCount === 5 ? 'STRONG BEARISH CONFLUENCE (5/5)' : 'BEARISH CONFLUENCE (4/5)';
     } else {
       this.alignment = 'MIXED TIMEFRAMES';
     }

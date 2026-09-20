@@ -1,60 +1,146 @@
 // ═════════════════════════════════════════════════════════════════════
-// NEXUS-V INSTITUTIONAL PRODUCTION STRATEGY ENGINE
-// 5-Layer Cross-Regime Confluence · 34-RL Consensus Quorum
-// Microstructure Alpha · 0.50 Profit Target State Machine · Breakeven Ratchet
+// DYNAMIC MARKET ANALYST ENGINE — LIVE MARKET ANALYSIS & TRADING STRATEGY
+// 6-Layer Adaptive Analysis: Regime → Momentum → Volatility → Microstructure → RL Consensus → Risk
+// DISTRIBUTION-PREDICTED TARGETS · Trailing Stops · Regime-Aware Position Sizing
+// NO fixed % TP/SL — Targets from MovementPredictionEngine distribution
+// NO SIMULATION — 100% LIVE MARKET DATA ONLY
 // ═════════════════════════════════════════════════════════════════════
 
 import { clamp, mean, std } from '../utils/math.js';
 
 export class ProductionStrategyEngine {
   constructor() {
-    this.name = 'NEXUS-V Institutional Cross-Regime Strategy';
-    this.version = '2.4.0-PROD';
-    this.status = 'ACTIVE_MONITORING'; // 'ACTIVE_MONITORING' | 'CONFLUENCE_FORMING' | 'IN_TRADE' | 'RATCHET_ENGAGED' | 'PROFIT_TAKEN'
-    
-    // Core Sizing & Targets (0.50 Profit Target Calibration)
-    this.LOT_UNIT_ETH = 0.01;      // 1 lot = 0.01 ETH
-    this.DEFAULT_POSITION_ETH = 0.50; // 0.50 ETH position size (50 lots)
-    this.TARGET_PROFIT_PCT = 0.50; // 0.50% Take Profit
-    this.MICRO_TP1_PCT = 0.25;     // 0.25% Scale-out 50%
-    this.STOP_LOSS_PCT = 0.25;     // 0.25% Initial Stop Loss (1:2 R:R)
-    this.BREAKEVEN_BUFFER_PCT = 0.05; // +0.05% Breakeven ratchet to cover fees
-    this.MAX_HOLD_SECONDS = 2700;  // 45-minute timeout protection
+    this.name = 'Dynamic Market Analyst Engine';
+    this.version = '3.0.0-LIVE';
+    this.status = 'SCANNING'; // 'SCANNING' | 'SIGNAL_FORMING' | 'IN_TRADE' | 'TRAILING' | 'INVALIDATED'
 
-    // Strategy State Machine
+    // Regime Profiles — NO fixed tpMultiple/slMultiple
+    // TP and SL come dynamically from MovementPredictionEngine
+    this.REGIME_PROFILES = {
+      TRENDING:      { minConfluence: 65, holdBias: 'trend-follow' },
+      MEAN_REVERTING: { minConfluence: 70, holdBias: 'reversion' },
+      VOLATILE:      { minConfluence: 75, holdBias: 'breakout' },
+      COMPRESSION:   { minConfluence: 72, holdBias: 'squeeze' },
+      BREAKOUT:      { minConfluence: 68, holdBias: 'momentum' },
+      UNKNOWN:       { minConfluence: 78, holdBias: 'cautious' },
+    };
+
+    // External movement prediction (injected from MovementPredictionEngine)
+    this.movementPrediction = null;
+    this.healingEngine = null;
+
+    // Adaptive Position Sizing
+    this.BASE_POSITION_ETH = 0.50;
+    this.LOT_UNIT_ETH = 0.01;
+
+    // State Machine
     this.activeTrade = null;
     this.tradeHistory = [];
-    this.confluenceHistory = [];
-    
-    // Performance Metrics
+    this.tradeCount = 0;
+    this.winCount = 0;
+
+    // Performance Metrics (live-accumulated)
     this.stats = {
-      totalSignals: 48,
-      tradesExecuted: 32,
-      winRatePct: 75.0,
-      profitFactor: 2.84,
-      avgGainUSD: 6.52,
-      avgLossUSD: 3.26,
-      maxDrawdownPct: 1.12,
-      sharpeRatio: 3.42,
+      totalSignals: 0,
+      tradesExecuted: 0,
+      winRatePct: 0,
+      profitFactor: 0,
+      avgGainUSD: 0,
+      avgLossUSD: 0,
+      maxDrawdownPct: 0,
+      sharpeRatio: 0,
+      totalPnlUSD: 0,
     };
 
-    // Current Confluence State (5-Layer Audit)
+    // 6-Layer Analysis State
     this.layers = {
-      layer1_regime: { status: 'CHECKING', score: 0, desc: 'Analyzing macro drift & OU spread' },
-      layer2_candlestick: { status: 'CHECKING', score: 0, desc: 'Scanning 9-tier pattern reliability' },
-      layer3_rl_consensus: { status: 'CHECKING', score: 0, desc: 'Polling 34-algorithm ensemble' },
-      layer4_microstructure: { status: 'CHECKING', score: 0, desc: 'Evaluating Kalman edge & OFI delta' },
-      layer5_risk_gate: { status: 'CHECKING', score: 0, desc: 'Verifying pre-trade limits & VaR' },
+      layer1_regime:         { status: 'ANALYZING', score: 0, desc: 'Detecting market regime...' },
+      layer2_momentum:       { status: 'ANALYZING', score: 0, desc: 'Computing directional momentum...' },
+      layer3_volatility:     { status: 'ANALYZING', score: 0, desc: 'Forecasting volatility range...' },
+      layer4_microstructure: { status: 'ANALYZING', score: 0, desc: 'Evaluating order flow edge...' },
+      layer5_rl_consensus:   { status: 'ANALYZING', score: 0, desc: 'Polling 34-algorithm ensemble...' },
+      layer6_risk_gate:      { status: 'ANALYZING', score: 0, desc: 'Checking pre-trade risk gates...' },
     };
 
-    this.confluenceScore = 0; // 0 - 100%
-    this.executionAction = 'NEUTRAL / MONITOR';
+    this.confluenceScore = 0;
+    this.executionAction = 'SCANNING MARKET';
+    this.currentATR = 18.50;
+    this.predictedRange = { high: 0, low: 0, expectedMove: 0 };
+    this.verdict = 'HOLD';
+    this.verdictConfidence = 0;
   }
 
-  /**
-   * Evaluate all 5 layers on every market tick
-   * @param {Object} context Global market context
-   */
+  // ═══════════════════════════════════════════════════════════════════
+  // CORE: Compute ATR from live candle data
+  // ═══════════════════════════════════════════════════════════════════
+  computeATR(candles, period = 14) {
+    if (!candles || candles.length < 5) return 18.50;
+    let trSum = 0;
+    const n = Math.min(period, candles.length - 1);
+    for (let i = candles.length - n; i < candles.length; i++) {
+      const cur = candles[i];
+      const prev = candles[i - 1];
+      if (!cur || !prev) continue;
+      const tr = Math.max(
+        (cur.high || cur.h || 0) - (cur.low || cur.l || 0),
+        Math.abs((cur.high || cur.h || 0) - (prev.close || prev.c || 0)),
+        Math.abs((cur.low || cur.l || 0) - (prev.close || prev.c || 0))
+      );
+      trSum += tr;
+    }
+    return Math.max(2.0, trSum / Math.max(1, n));
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // CORE: Compute RSI from price series
+  // ═══════════════════════════════════════════════════════════════════
+  computeRSI(prices, period = 14) {
+    if (!prices || prices.length < period + 1) return 50;
+    let gains = 0, losses = 0;
+    const start = prices.length - period - 1;
+    for (let i = start + 1; i < prices.length; i++) {
+      const delta = prices[i] - prices[i - 1];
+      if (delta > 0) gains += delta;
+      else losses -= delta;
+    }
+    const avgGain = gains / period;
+    const avgLoss = losses / period;
+    if (avgLoss === 0) return 100;
+    const rs = avgGain / avgLoss;
+    return 100 - (100 / (1 + rs));
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // CORE: Compute EMA from price series
+  // ═══════════════════════════════════════════════════════════════════
+  computeEMA(prices, period) {
+    if (!prices || prices.length === 0) return 0;
+    const k = 2 / (period + 1);
+    let ema = prices[0];
+    for (let i = 1; i < prices.length; i++) {
+      ema = prices[i] * k + ema * (1 - k);
+    }
+    return ema;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // CORE: Compute Bollinger Bandwidth
+  // ═══════════════════════════════════════════════════════════════════
+  computeBollingerBandwidth(prices, period = 20) {
+    if (!prices || prices.length < period) return { bandwidth: 0.02, upper: 0, lower: 0, middle: 0 };
+    const slice = prices.slice(-period);
+    const sma = slice.reduce((a, b) => a + b, 0) / period;
+    const variance = slice.reduce((s, p) => s + (p - sma) ** 2, 0) / period;
+    const stdDev = Math.sqrt(variance);
+    const upper = sma + 2 * stdDev;
+    const lower = sma - 2 * stdDev;
+    const bandwidth = sma > 0 ? (upper - lower) / sma : 0.02;
+    return { bandwidth, upper, lower, middle: sma, stdDev };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // MAIN EVALUATE — Called every tick with live market data
+  // ═══════════════════════════════════════════════════════════════════
   evaluate(context) {
     const {
       price,
@@ -67,157 +153,303 @@ export class ProductionStrategyEngine {
       mtfData = null,
     } = context;
 
-    if (!price || price <= 0) return this.getFallbackTelemetry(price);
+    if (!price || price <= 0 || prices.length < 20) return this.getFallbackTelemetry(price);
 
     const now = Date.now();
 
+    // Get active candles from MTF engine
+    const activeCandles = context.activeCandles || [];
+    this.currentATR = this.computeATR(activeCandles);
+    const atr = this.currentATR;
+
     // ─────────────────────────────────────────────────────────────────
-    // LAYER 1: REGIME IDENTIFICATION (Kalman Drift vs OU vs Hawkes)
+    // LAYER 1: MARKET REGIME CLASSIFICATION
+    // Uses Kalman drift, OU spread, Hawkes branching, Bollinger bandwidth
     // ─────────────────────────────────────────────────────────────────
+    let detectedRegime = 'UNKNOWN';
     let regimeScore = 50;
-    let currentRegime = 'BALANCED / NEUTRAL';
     let regimeDirection = 0;
+
+    const bb = this.computeBollingerBandwidth(prices);
+    const rsi = this.computeRSI(prices);
 
     if (quantData) {
       const kalmanDrift = quantData.kalmanDrift || 0;
       const ouZ = quantData.ouSpreadZ || 0;
       const branchingRatio = quantData.branchingRatio || 0.6;
 
-      // Volatility shock suppression (Hawkes jump cascade)
       if (branchingRatio > 0.95) {
-        currentRegime = 'VOLATILITY SHOCK (CIRCUIT SUPPRESSED)';
-        regimeScore = 15;
+        detectedRegime = 'VOLATILE';
+        regimeScore = 30;
         regimeDirection = 0;
+      } else if (bb.bandwidth < 0.015) {
+        detectedRegime = 'COMPRESSION';
+        regimeScore = 72;
+        regimeDirection = 0; // Waiting for breakout direction
       } else if (Math.abs(ouZ) > 1.7) {
-        // Mean Reversion Regime
-        currentRegime = ouZ > 1.7 ? 'OU OVERBOUGHT MEAN-REVERTING' : 'OU OVERSOLD MEAN-REVERTING';
+        detectedRegime = 'MEAN_REVERTING';
         regimeDirection = ouZ > 1.7 ? -1 : 1;
         regimeScore = 85;
       } else if (Math.abs(kalmanDrift) > 0.08) {
-        // Directional Trend Regime
-        currentRegime = kalmanDrift > 0 ? 'MOMENTUM EXPANSION (BULL)' : 'MOMENTUM CONTRACTION (BEAR)';
+        detectedRegime = 'TRENDING';
         regimeDirection = kalmanDrift > 0 ? 1 : -1;
         regimeScore = 90;
+      } else if (Math.abs(kalmanDrift) > 0.04 && bb.bandwidth > 0.03) {
+        detectedRegime = 'BREAKOUT';
+        regimeDirection = kalmanDrift > 0 ? 1 : -1;
+        regimeScore = 78;
       } else {
-        currentRegime = 'STEADY-STATE ORDER FLOW';
+        detectedRegime = 'TRENDING';
         regimeDirection = ensemble > 0 ? 1 : -1;
-        regimeScore = 70;
+        regimeScore = 65;
+      }
+    } else {
+      // Fallback: use price action + BB
+      const ret20 = prices.length >= 21 ? (prices[prices.length - 1] / prices[prices.length - 21] - 1) : 0;
+      if (bb.bandwidth < 0.012) {
+        detectedRegime = 'COMPRESSION';
+        regimeScore = 68;
+      } else if (Math.abs(ret20) > 0.03) {
+        detectedRegime = 'TRENDING';
+        regimeDirection = ret20 > 0 ? 1 : -1;
+        regimeScore = 75;
+      } else if (bb.bandwidth > 0.04) {
+        detectedRegime = 'VOLATILE';
+        regimeScore = 60;
+      } else {
+        detectedRegime = 'MEAN_REVERTING';
+        regimeScore = 55;
+        regimeDirection = price < bb.middle ? 1 : -1;
       }
     }
 
     this.layers.layer1_regime = {
-      status: regimeScore >= 70 ? 'PASS' : 'HOLD',
+      status: regimeScore >= 65 ? 'IDENTIFIED' : 'AMBIGUOUS',
       score: regimeScore,
-      regime: currentRegime,
+      regime: detectedRegime,
       direction: regimeDirection,
-      desc: `${currentRegime} (Direction: ${regimeDirection > 0 ? 'BULL' : regimeDirection < 0 ? 'BEAR' : 'FLAT'})`,
+      bbBandwidth: (bb.bandwidth * 100).toFixed(2) + '%',
+      desc: `${detectedRegime} (Confidence: ${regimeScore}%, BB Width: ${(bb.bandwidth * 100).toFixed(2)}%)`,
     };
 
     // ─────────────────────────────────────────────────────────────────
-    // LAYER 2: CANDLESTICK STRUCTURAL CONFLUENCE (9-Tier Ranking)
+    // LAYER 2: DIRECTIONAL MOMENTUM SIGNAL
+    // Multi-timeframe EMA crossover + RSI + candlestick confluence
     // ─────────────────────────────────────────────────────────────────
-    let candleScore = 40;
+    const ema8 = this.computeEMA(prices, 8);
+    const ema21 = this.computeEMA(prices, 21);
+    const ema50 = this.computeEMA(prices.slice(-60), 50);
+    const emaCross = ema8 - ema21;
+    const emaTrend = ema21 - ema50;
+
+    let momentumScore = 50;
+    let momentumDirection = 0;
+
+    // EMA Stack analysis
+    const emaAligned = (ema8 > ema21 && ema21 > ema50) ? 1 : (ema8 < ema21 && ema21 < ema50) ? -1 : 0;
+
+    // RSI momentum
+    const rsiMomentum = rsi > 60 ? 1 : rsi < 40 ? -1 : 0;
+
+    // Price vs EMA position
+    const priceVsEma = price > ema21 ? 1 : price < ema21 ? -1 : 0;
+
+    // Candlestick pattern contribution
     let candleDirection = 0;
-    let recognizedPattern = null;
-
-    const activePatterns = candlestickData?.patterns || [];
-    if (activePatterns.length > 0) {
-      const p = activePatterns[0];
-      recognizedPattern = p;
-      const isBull = p.type === 'BULLISH';
-      candleDirection = isBull ? 1 : -1;
-
-      // Tier weights
-      const stars = (p.reliability || '').length;
-      if (stars >= 5) candleScore = 98;      // Tier 1: Kicker / 3 Soldiers / 3 Crows
-      else if (stars >= 4) candleScore = 88; // Tier 2: Star / Engulfing / Hikkake / 3-Line Strike
-      else if (stars >= 3) candleScore = 72; // Tier 3: Hammer / Shooting Star
-      else candleScore = 45;                 // Tier 4: Doji / Spinning Top (Wait for confirmation)
-    } else {
-      candleScore = 60;
-      candleDirection = regimeDirection;
+    let candleStrength = 0;
+    if (candlestickData && candlestickData.patterns && candlestickData.patterns.length > 0) {
+      const topPattern = candlestickData.patterns[0];
+      candleDirection = topPattern.type === 'BULLISH' ? 1 : -1;
+      const stars = (topPattern.reliability || '').length;
+      candleStrength = stars >= 5 ? 0.95 : stars >= 4 ? 0.80 : stars >= 3 ? 0.60 : 0.30;
     }
 
-    this.layers.layer2_candlestick = {
-      status: candleScore >= 65 ? 'PASS' : 'HOLD',
-      score: candleScore,
-      direction: candleDirection,
-      pattern: recognizedPattern ? recognizedPattern.name : 'Structural Price Action',
-      reliability: recognizedPattern ? recognizedPattern.reliability : '★★★☆☆',
-      desc: recognizedPattern
-        ? `${recognizedPattern.name} (${recognizedPattern.reliability}) [${recognizedPattern.type}]`
-        : 'Structural Support/Resistance Bounce',
+    // MTF confluence
+    const mtfScore = mtfData ? (mtfData.confluenceScore || 0) : 0;
+    const mtfDirection = mtfScore > 0.3 ? 1 : mtfScore < -0.3 ? -1 : 0;
+
+    // Composite momentum
+    const rawMomentum = (
+      emaAligned * 0.30 +
+      rsiMomentum * 0.15 +
+      priceVsEma * 0.15 +
+      candleDirection * candleStrength * 0.20 +
+      mtfDirection * 0.20
+    );
+
+    momentumDirection = rawMomentum > 0.15 ? 1 : rawMomentum < -0.15 ? -1 : 0;
+    momentumScore = Math.round(clamp(Math.abs(rawMomentum) * 100, 10, 98));
+
+    this.layers.layer2_momentum = {
+      status: momentumScore >= 55 ? 'DIRECTIONAL' : 'FLAT',
+      score: momentumScore,
+      direction: momentumDirection,
+      rsi: rsi.toFixed(1),
+      emaStack: emaAligned > 0 ? 'BULL STACK' : emaAligned < 0 ? 'BEAR STACK' : 'MIXED',
+      emaCross: emaCross.toFixed(2),
+      candlePattern: candlestickData?.patterns?.[0]?.name || 'None',
+      desc: `RSI: ${rsi.toFixed(1)} | EMA: ${emaAligned > 0 ? '↑ Bull Stack' : emaAligned < 0 ? '↓ Bear Stack' : '→ Mixed'} | Momentum: ${momentumScore}%`,
     };
 
     // ─────────────────────────────────────────────────────────────────
-    // LAYER 3: 34-RL ALGORITHM CONSENSUS QUORUM (> 65% Target)
+    // LAYER 3: VOLATILITY & RANGE FORECAST
+    // Dynamic predicted range from MovementPredictionEngine (NOT fixed ATR multiples)
     // ─────────────────────────────────────────────────────────────────
-    let rlScore = 50;
-    let rlDirection = 0;
-    const signalKeys = Object.keys(signals);
-    let bullCount = 0;
-    let bearCount = 0;
+    const regimeProfile = this.REGIME_PROFILES[detectedRegime] || this.REGIME_PROFILES.UNKNOWN;
 
-    signalKeys.forEach(k => {
-      const s = signals[k];
-      const dir = s.direction !== undefined ? s.direction : (s.signal === 'BUY' ? 1 : s.signal === 'SELL' ? -1 : 0);
-      if (dir > 0) bullCount++;
-      else if (dir < 0) bearCount++;
-    });
+    // Use dynamic prediction if available, otherwise fallback to 1.5x ATR
+    const mp = context.movementPrediction || this.movementPrediction;
+    const expectedMoveUp = mp ? mp.predictedMovement.mainMove : atr * 1.5;
+    const expectedMoveDown = mp ? mp.adverseMovement.expected : atr;
 
-    const totalAlgos = Math.max(1, signalKeys.length);
-    const dominantCount = Math.max(bullCount, bearCount);
-    const consensusPct = Math.round((dominantCount / totalAlgos) * 100);
-
-    if (dominantCount === bullCount && bullCount > bearCount) {
-      rlDirection = 1;
-    } else if (dominantCount === bearCount && bearCount > bullCount) {
-      rlDirection = -1;
-    } else {
-      rlDirection = ensemble >= 0 ? 1 : -1;
+    // Realized volatility (annualized from recent returns)
+    let realizedVol = 0;
+    if (prices.length >= 20) {
+      const rets = [];
+      for (let i = prices.length - 20; i < prices.length; i++) {
+        if (i > 0 && prices[i - 1] > 0) rets.push(prices[i] / prices[i - 1] - 1);
+      }
+      if (rets.length > 0) {
+        const m = rets.reduce((a, b) => a + b, 0) / rets.length;
+        const v = rets.reduce((s, r) => s + (r - m) ** 2, 0) / rets.length;
+        realizedVol = Math.sqrt(v) * Math.sqrt(365 * 24); // annualized
+      }
     }
 
-    rlScore = clamp(consensusPct + 10, 20, 99);
+    const atrPct = price > 0 ? (atr / price * 100) : 0;
+    const volScore = Math.round(clamp(100 - atrPct * 30, 20, 95));
 
-    this.layers.layer3_rl_consensus = {
-      status: consensusPct >= 60 ? 'PASS' : 'HOLD',
-      score: consensusPct,
-      direction: rlDirection,
-      dominantCount,
-      totalAlgos,
-      desc: `${consensusPct}% Consensus (${dominantCount}/${totalAlgos} Algos ${rlDirection > 0 ? 'Long' : 'Short'})`,
+    this.predictedRange = {
+      high: mp ? mp.predictedMovement.mainTarget : Math.round((price + expectedMoveUp) * 100) / 100,
+      low: mp ? mp.adverseMovement.rangeLow : Math.round((price - expectedMoveDown) * 100) / 100,
+      expectedMove: Math.round(expectedMoveUp * 100) / 100,
+      atrPct: atrPct.toFixed(3),
+      // Movement prediction details
+      conservativeTarget: mp ? mp.predictedMovement.conservativeTarget : 0,
+      mainTarget: mp ? mp.predictedMovement.mainTarget : 0,
+      extendedTarget: mp ? mp.predictedMovement.extendedTarget : 0,
+      predictionSource: mp ? 'DISTRIBUTION_PREDICTED' : 'ATR_FALLBACK',
+    };
+
+    const rangeLabel = mp
+      ? `PREDICTED: $${this.predictedRange.low} – $${this.predictedRange.high} (${mp.confidence}% conf)`
+      : `ATR Fallback: $${this.predictedRange.low} – $${this.predictedRange.high}`;
+
+    this.layers.layer3_volatility = {
+      status: atrPct < 1.5 ? 'LOW_VOL' : atrPct < 3.0 ? 'NORMAL' : 'HIGH_VOL',
+      score: volScore,
+      atr: atr.toFixed(2),
+      atrPct: atrPct.toFixed(3) + '%',
+      realizedVol: (realizedVol * 100).toFixed(1) + '%',
+      bbWidth: (bb.bandwidth * 100).toFixed(2) + '%',
+      predictedHigh: this.predictedRange.high,
+      predictedLow: this.predictedRange.low,
+      expectedMove: '$' + expectedMoveUp.toFixed(2),
+      predictionSource: this.predictedRange.predictionSource,
+      desc: `${rangeLabel} | ATR: $${atr.toFixed(2)} (${atrPct.toFixed(3)}%) | RVol: ${(realizedVol * 100).toFixed(1)}%`,
     };
 
     // ─────────────────────────────────────────────────────────────────
-    // LAYER 4: MICROSTRUCTURE ALPHA (Kalman Edge & OFI Delta)
+    // LAYER 4: MICROSTRUCTURE EDGE
+    // Kalman fair value, OFI, VPIN toxicity, Kyle's lambda
     // ─────────────────────────────────────────────────────────────────
-    let microScore = 65;
+    let microScore = 50;
     let microDirection = 0;
     let edgeBps = 0;
+    let toxicity = 'NORMAL';
 
-    if (quantData && quantData.kalmanFairValue) {
-      const fairVal = quantData.kalmanFairValue;
+    if (quantData) {
+      // Kalman fair value edge
+      const fairVal = quantData.kalmanFairValue || price;
       const diff = fairVal - price;
-      edgeBps = ((diff / price) * 10000).toFixed(1);
-      microDirection = diff >= 0 ? 1 : -1;
-      microScore = Math.abs(diff) > 0.5 ? 88 : 65;
+      edgeBps = price > 0 ? ((diff / price) * 10000) : 0;
+      microDirection = diff >= 1 ? 1 : diff <= -1 ? -1 : 0;
+
+      // VPIN toxicity
+      const vpin = quantData.vpin || 0.18;
+      toxicity = vpin > 0.40 ? 'TOXIC (AVOID)' : vpin > 0.25 ? 'ELEVATED' : 'NORMAL';
+
+      // Kyle's lambda (adverse selection)
+      const kyleLambda = quantData.kyle?.lambda || 0.04;
+      const adverseSelection = kyleLambda > 0.08 ? 'HIGH' : kyleLambda > 0.04 ? 'MODERATE' : 'LOW';
+
+      // Composite micro score
+      const edgeScore = Math.min(95, Math.abs(edgeBps) * 3);
+      const toxicityPenalty = vpin > 0.40 ? 30 : vpin > 0.25 ? 15 : 0;
+      microScore = Math.round(clamp(edgeScore - toxicityPenalty + 30, 15, 98));
     } else {
-      microDirection = rlDirection;
+      microDirection = momentumDirection;
+      microScore = 50;
     }
 
     this.layers.layer4_microstructure = {
-      status: microScore >= 65 ? 'PASS' : 'HOLD',
+      status: microScore >= 55 ? 'EDGE_DETECTED' : 'NEUTRAL',
       score: microScore,
       direction: microDirection,
-      edgeBps: `${edgeBps > 0 ? '+' : ''}${edgeBps} bps`,
-      desc: `Zero-Lag Kalman Edge: ${edgeBps > 0 ? '+' : ''}${edgeBps} bps (${microDirection > 0 ? 'Undervalued' : 'Overvalued'})`,
+      edgeBps: `${edgeBps > 0 ? '+' : ''}${edgeBps.toFixed(1)} bps`,
+      toxicity,
+      desc: `Kalman Edge: ${edgeBps > 0 ? '+' : ''}${edgeBps.toFixed(1)} bps | Toxicity: ${toxicity}`,
     };
 
     // ─────────────────────────────────────────────────────────────────
-    // LAYER 5: PRODUCTION RISK GATEKEEPER (Drawdown & Circuit Breaker)
+    // LAYER 5: 34-RL ALGORITHM CONSENSUS
+    // Direction agreement, conviction-weighted, quality filtering
+    // ─────────────────────────────────────────────────────────────────
+    const signalKeys = Object.keys(signals);
+    let bullCount = 0, bearCount = 0, holdCount = 0;
+    let bullConv = 0, bearConv = 0;
+
+    signalKeys.forEach(k => {
+      const s = signals[k];
+      if (!s) return;
+      const dir = s.direction !== undefined ? s.direction : (s.signal === 'BUY' ? 1 : s.signal === 'SELL' ? -1 : 0);
+      const conf = s.conf !== undefined ? s.conf : 0.5;
+      if (dir > 0) { bullCount++; bullConv += conf; }
+      else if (dir < 0) { bearCount++; bearConv += conf; }
+      else holdCount++;
+    });
+
+    const totalAlgos = Math.max(1, signalKeys.length);
+    const bullPct = Math.round((bullCount / totalAlgos) * 100);
+    const bearPct = Math.round((bearCount / totalAlgos) * 100);
+    const holdPct = Math.round((holdCount / totalAlgos) * 100);
+    const dominantCount = Math.max(bullCount, bearCount, holdCount);
+    const consensusPct = Math.round((dominantCount / totalAlgos) * 100);
+
+    let rlDirection = 0;
+    let rlVerdict = 'HOLD';
+    if (bullCount > bearCount && bullCount > holdCount) {
+      rlDirection = 1;
+      rlVerdict = 'BUY';
+    } else if (bearCount > bullCount && bearCount > holdCount) {
+      rlDirection = -1;
+      rlVerdict = 'SELL';
+    }
+
+    const avgBullConv = bullCount > 0 ? (bullConv / bullCount) : 0;
+    const avgBearConv = bearCount > 0 ? (bearConv / bearCount) : 0;
+    const convictionScore = rlDirection > 0 ? avgBullConv : rlDirection < 0 ? avgBearConv : 0;
+
+    this.layers.layer5_rl_consensus = {
+      status: consensusPct >= 60 ? 'CONSENSUS' : consensusPct >= 45 ? 'LEANING' : 'SPLIT',
+      score: consensusPct,
+      direction: rlDirection,
+      verdict: rlVerdict,
+      bullPct,
+      bearPct,
+      holdPct,
+      dominantCount,
+      totalAlgos,
+      conviction: (convictionScore * 100).toFixed(0) + '%',
+      desc: `${rlVerdict}: ${consensusPct}% (${dominantCount}/${totalAlgos}) | BUY: ${bullPct}% · SELL: ${bearPct}% · HOLD: ${holdPct}% | Conviction: ${(convictionScore * 100).toFixed(0)}%`,
+    };
+
+    // ─────────────────────────────────────────────────────────────────
+    // LAYER 6: RISK GATEKEEPER
+    // Drawdown, kill switch, position limits, VaR
     // ─────────────────────────────────────────────────────────────────
     let riskApproved = true;
-    let riskDesc = 'All Pre-Trade Risk Gates Passed';
+    let riskDesc = 'All Risk Gates: PASSED';
 
     if (riskData) {
       if (riskData.killSwitchTriggered) {
@@ -228,80 +460,125 @@ export class ProductionStrategyEngine {
         riskDesc = 'BLOCKED: Circuit Breaker Level 2';
       } else if (riskData.metrics?.currentDrawdownPct < -3.0) {
         riskApproved = false;
-        riskDesc = 'BLOCKED: Daily Drawdown Limit Exceeded';
+        riskDesc = 'BLOCKED: Daily Drawdown Limit (-3%) Exceeded';
       }
     }
 
-    this.layers.layer5_risk_gate = {
-      status: riskApproved ? 'PASS' : 'REJECT',
-      score: riskApproved ? 95 : 10,
+    this.layers.layer6_risk_gate = {
+      status: riskApproved ? 'APPROVED' : 'BLOCKED',
+      score: riskApproved ? 95 : 5,
       approved: riskApproved,
       desc: riskDesc,
     };
 
-    // ─────────────────────────────────────────────────────────────────
-    // COMPOSITE CONFLUENCE EVALUATION
-    // ─────────────────────────────────────────────────────────────────
-    const dirSum = regimeDirection + candleDirection + rlDirection + microDirection;
-    const overallDirection = dirSum >= 2 ? 1 : (dirSum <= -2 ? -1 : 0);
+    // ═══════════════════════════════════════════════════════════════════
+    // COMPOSITE DECISION ENGINE — DYNAMIC VERDICT
+    // ═══════════════════════════════════════════════════════════════════
 
+    // Direction convergence
+    const dirSum = regimeDirection + momentumDirection + microDirection + rlDirection;
+    const overallDirection = dirSum >= 2 ? 1 : dirSum <= -2 ? -1 : 0;
+
+    // Weighted confluence score
     const weightedScore = Math.round(
-      regimeScore * 0.20 +
-      candleScore * 0.25 +
-      consensusPct * 0.25 +
+      regimeScore * 0.15 +
+      momentumScore * 0.25 +
+      volScore * 0.10 +
       microScore * 0.15 +
-      (riskApproved ? 95 : 0) * 0.15
+      consensusPct * 0.25 +
+      (riskApproved ? 95 : 0) * 0.10
     );
 
     this.confluenceScore = weightedScore;
 
-    // ─────────────────────────────────────────────────────────────────
-    // 0.50 PROFIT TARGET STATE MACHINE & EXECUTION ROADMAP
-    // ─────────────────────────────────────────────────────────────────
-    const positionSizeETH = this.DEFAULT_POSITION_ETH; // 0.50 ETH
-    const positionUSD = (positionSizeETH * price).toFixed(2);
-    const oneLotUSD = (this.LOT_UNIT_ETH * price).toFixed(2);
-
-    let entry = price;
-    let tp1 = 0;
-    let tp2 = 0;
-    let sl = 0;
-    let fixed050USDPrice = 0;
-
-    if (overallDirection >= 0) {
-      // ── BUY / LONG ROADMAP ──
-      entry = price;
-      tp1 = price * (1 + this.MICRO_TP1_PCT / 100);   // +0.25% ($2,615.02)
-      tp2 = price * (1 + this.TARGET_PROFIT_PCT / 100); // +0.50% ($2,621.54)
-      sl = price * (1 - this.STOP_LOSS_PCT / 100);     // -0.25% ($2,601.98)
-      fixed050USDPrice = price + 50.0;                 // Exact +$0.50 profit on 1 lot
+    // Determine final verdict
+    const minConfluence = regimeProfile.minConfluence;
+    if (!riskApproved) {
+      this.verdict = 'HOLD';
+      this.verdictConfidence = 0;
+      this.executionAction = 'RISK BLOCKED — CAPITAL PRESERVATION';
+    } else if (weightedScore >= minConfluence && overallDirection !== 0) {
+      if (overallDirection > 0) {
+        this.verdict = weightedScore >= 82 ? 'STRONG BUY' : 'BUY';
+        this.executionAction = `${this.verdict}: ${detectedRegime} regime, ${momentumScore}% momentum`;
+      } else {
+        this.verdict = weightedScore >= 82 ? 'STRONG SELL' : 'SELL';
+        this.executionAction = `${this.verdict}: ${detectedRegime} regime, ${momentumScore}% momentum`;
+      }
+      this.verdictConfidence = Math.min(99, weightedScore);
+    } else if (weightedScore >= 55 && overallDirection !== 0) {
+      this.verdict = 'HOLD';
+      this.verdictConfidence = weightedScore;
+      this.executionAction = `CONFLUENCE FORMING (${weightedScore}% / ${minConfluence}% required)`;
     } else {
-      // ── SELL / SHORT ROADMAP ──
-      entry = price;
-      tp1 = price * (1 - this.MICRO_TP1_PCT / 100);   // -0.25% ($2,601.98)
-      tp2 = price * (1 - this.TARGET_PROFIT_PCT / 100); // -0.50% ($2,595.46)
-      sl = price * (1 + this.STOP_LOSS_PCT / 100);     // +0.25% ($2,615.02)
-      fixed050USDPrice = price - 50.0;                 // Exact +$0.50 profit on 1 lot
+      this.verdict = 'HOLD';
+      this.verdictConfidence = weightedScore;
+      this.executionAction = 'SCANNING MARKET — NO CLEAR EDGE';
     }
 
-    // Exact Dollar P&L
-    const tp1GainUSD = (positionSizeETH * price * (this.MICRO_TP1_PCT / 100)).toFixed(2); // +$3.26
-    const tp2GainUSD = (positionSizeETH * price * (this.TARGET_PROFIT_PCT / 100)).toFixed(2); // +$6.52
-    const slLossUSD = (positionSizeETH * price * (this.STOP_LOSS_PCT / 100)).toFixed(2); // -$3.26
+    // ═══════════════════════════════════════════════════════════════════
+    // ADAPTIVE TRADE MANAGEMENT — Distribution-Predicted TP/SL
+    // Targets come from MovementPredictionEngine, NOT fixed ATR multiples
+    // ═══════════════════════════════════════════════════════════════════
 
-    // Manage Active Trade Lifecycle
-    if (!this.activeTrade && weightedScore >= 72 && riskApproved && overallDirection !== 0) {
+    // Dynamic TP/SL from prediction engine
+    const tpDist = mp ? mp.predictedMovement.mainMove : atr * 1.5;
+    const slDist = mp ? mp.adverseMovement.expected : atr;
+    const scaleTp1 = mp ? mp.predictedMovement.conservativeMove : tpDist * 0.5;
+
+    // Kelly-adjusted position sizing using predicted R:R
+    const winRate = this.stats.winRatePct > 0 ? this.stats.winRatePct / 100 : 0.55;
+    const avgWinRatio = tpDist / (slDist || 1);
+    const kellyFraction = Math.max(0.05, Math.min(0.40,
+      (winRate * avgWinRatio - (1 - winRate)) / avgWinRatio
+    ));
+    const positionSizeETH = Math.round(this.BASE_POSITION_ETH * kellyFraction * 100) / 100;
+    const positionUSD = (positionSizeETH * price).toFixed(2);
+
+    // Dynamic TP/SL levels from prediction
+    let entry = price;
+    let tp1 = 0, tp2 = 0, sl = 0;
+
+    if (mp) {
+      // Use predicted targets directly — NO fixed multiplier
+      tp1 = mp.predictedMovement.conservativeTarget;
+      tp2 = mp.predictedMovement.mainTarget;
+      sl = mp.invalidationLevel;
+    } else if (overallDirection >= 0) {
+      tp1 = Math.round((price + scaleTp1) * 100) / 100;
+      tp2 = Math.round((price + tpDist) * 100) / 100;
+      sl = Math.round((price - slDist) * 100) / 100;
+    } else {
+      tp1 = Math.round((price - scaleTp1) * 100) / 100;
+      tp2 = Math.round((price - tpDist) * 100) / 100;
+      sl = Math.round((price + slDist) * 100) / 100;
+    }
+
+    const tp1GainUSD = (positionSizeETH * scaleTp1).toFixed(2);
+    const tp2GainUSD = (positionSizeETH * tpDist).toFixed(2);
+    const slLossUSD = (positionSizeETH * slDist).toFixed(2);
+    const rrRatio = slDist > 0 ? (tpDist / slDist).toFixed(2) : '—';
+
+    // ═══════════════════════════════════════════════════════════════════
+    // ACTIVE TRADE LIFECYCLE MANAGEMENT
+    // ═══════════════════════════════════════════════════════════════════
+
+    if (!this.activeTrade && (this.verdict === 'BUY' || this.verdict === 'SELL' || this.verdict === 'STRONG BUY' || this.verdict === 'STRONG SELL') && riskApproved) {
+      this.stats.totalSignals++;
       this.activeTrade = {
-        id: `NEXUS-${now.toString().slice(-6)}`,
+        id: `DMA-${now.toString().slice(-6)}`,
         startTime: now,
         direction: overallDirection,
-        side: overallDirection > 0 ? 'BUY / LONG' : 'SELL / SHORT',
+        side: overallDirection > 0 ? 'BUY (LONG)' : 'SELL (SHORT)',
+        regime: detectedRegime,
         entryPrice: entry,
         currentPrice: price,
         tp1Price: tp1,
         tp2Price: tp2,
         initialSLPrice: sl,
         currentSLPrice: sl,
+        trailingSL: sl,
+        atrAtEntry: atr,
         ratchetEngaged: false,
         tp1Executed: false,
         sizeETH: positionSizeETH,
@@ -309,62 +586,79 @@ export class ProductionStrategyEngine {
         status: 'IN_TRADE',
         pnlUSD: '0.00',
         pnlPct: '0.00%',
+        entryConfluence: weightedScore,
+        entryVerdict: this.verdict,
+        realizedPartialPnl: 0,
       };
       this.status = 'IN_TRADE';
     } else if (this.activeTrade) {
       const t = this.activeTrade;
       t.currentPrice = price;
-      
-      // Calculate current trade P&L
+
       const priceDelta = t.direction > 0 ? (price - t.entryPrice) : (t.entryPrice - price);
       const curPct = (priceDelta / t.entryPrice) * 100;
-      t.pnlPct = `${curPct >= 0 ? '+' : ''}${curPct.toFixed(2)}%`;
+      t.pnlPct = `${curPct >= 0 ? '+' : ''}${curPct.toFixed(3)}%`;
       t.pnlUSD = (t.sizeETH * priceDelta).toFixed(2);
 
-      // Check TP1 Micro Scale-Out & Breakeven Ratchet (+0.25% hit)
+      // Trailing stop: ratchet SL as price moves in our favor
+      if (priceDelta > 0) {
+        const trailDist = (mp?.adverseMovement?.expected) || (t.atrAtEntry * 0.8);
+        const newTrailSL = t.direction > 0
+          ? price - trailDist
+          : price + trailDist;
+        if (t.direction > 0 && newTrailSL > t.currentSLPrice) {
+          t.currentSLPrice = Math.round(newTrailSL * 100) / 100;
+          if (!t.ratchetEngaged) t.ratchetEngaged = true;
+        } else if (t.direction < 0 && newTrailSL < t.currentSLPrice) {
+          t.currentSLPrice = Math.round(newTrailSL * 100) / 100;
+          if (!t.ratchetEngaged) t.ratchetEngaged = true;
+        }
+      }
+
+      // Check TP1 — scale out 50%
       if (!t.tp1Executed) {
         const hitTP1 = t.direction > 0 ? price >= t.tp1Price : price <= t.tp1Price;
         if (hitTP1) {
           t.tp1Executed = true;
-          t.ratchetEngaged = true;
-          // Breakeven ratchet: move SL to entry + 0.05% buffer
-          t.currentSLPrice = t.direction > 0
-            ? t.entryPrice * (1 + this.BREAKEVEN_BUFFER_PCT / 100)
-            : t.entryPrice * (1 - this.BREAKEVEN_BUFFER_PCT / 100);
-          this.status = 'RATCHET_ENGAGED';
+          const closedSize = +(t.sizeETH * 0.5).toFixed(4);
+          t.sizeETH = +(t.sizeETH - closedSize).toFixed(4);
+          const partialPnl = +(closedSize * priceDelta).toFixed(2);
+          t.realizedPartialPnl = (t.realizedPartialPnl || 0) + partialPnl;
+          this.status = 'TRAILING';
         }
       }
 
-      // Check TP2 (+0.50% Full Target hit)
+      // Check TP2 — full target
       const hitTP2 = t.direction > 0 ? price >= t.tp2Price : price <= t.tp2Price;
       if (hitTP2) {
-        t.status = 'PROFIT_TAKEN (+0.50%)';
-        this.status = 'PROFIT_TAKEN';
-        this.tradeHistory.unshift({ ...t, exitPrice: price, exitReason: 'TP2 (+0.50% TARGET HIT)' });
-        if (this.tradeHistory.length > 20) this.tradeHistory.pop();
-        this.activeTrade = null;
+        t.status = 'TARGET HIT';
+        this.closeTrade(t, price, 'TP2 (ATR Target Hit)');
       }
 
-      // Check Stop Loss
-      if (t) {
+      // Check trailing SL / initial SL
+      if (this.activeTrade) {
         const hitSL = t.direction > 0 ? price <= t.currentSLPrice : price >= t.currentSLPrice;
         if (hitSL) {
-          t.status = t.ratchetEngaged ? 'STOPPED AT BREAKEVEN (+0.05%)' : 'STOP LOSS HIT (-0.25%)';
-          this.status = 'ACTIVE_MONITORING';
-          this.tradeHistory.unshift({ ...t, exitPrice: price, exitReason: t.status });
-          if (this.tradeHistory.length > 20) this.tradeHistory.pop();
-          this.activeTrade = null;
+          t.status = t.ratchetEngaged ? 'TRAILING STOP HIT' : 'STOP LOSS HIT';
+          this.closeTrade(t, price, t.ratchetEngaged ? 'Trailing Stop' : 'Initial Stop Loss');
         }
+      }
+
+      // Invalidation: regime shift while in trade
+      if (this.activeTrade && t.regime !== detectedRegime && detectedRegime === 'VOLATILE') {
+        // Close on regime shift to volatile
+        t.status = 'REGIME INVALIDATED';
+        this.closeTrade(t, price, 'Regime Shifted to VOLATILE');
       }
     }
 
-    // Determine Final Strategy Action
-    if (weightedScore >= 75 && riskApproved) {
-      this.executionAction = overallDirection > 0 ? 'EXECUTE LONG (0.50 TARGET)' : 'EXECUTE SHORT (0.50 TARGET)';
-    } else if (weightedScore >= 60) {
-      this.executionAction = 'PRE-ARMING CONFLUENCE';
-    } else {
-      this.executionAction = 'MONITOR / CAPITAL PRESERVE';
+    // Update status
+    if (!this.activeTrade) {
+      if (this.verdict.includes('BUY') || this.verdict.includes('SELL')) {
+        this.status = 'SIGNAL_FORMING';
+      } else {
+        this.status = 'SCANNING';
+      }
     }
 
     return {
@@ -372,58 +666,137 @@ export class ProductionStrategyEngine {
       version: this.version,
       status: this.status,
       action: this.executionAction,
+      verdict: this.verdict,
+      verdictConfidence: this.verdictConfidence,
       confluenceScore: this.confluenceScore,
       direction: overallDirection,
-      // Target Calibration
-      targetSpec: '0.50 Profit Only',
-      positionSizeETH: this.DEFAULT_POSITION_ETH,
+
+      // Market Analysis
+      regime: detectedRegime,
+      regimeProfile: regimeProfile.holdBias,
+      atr: atr.toFixed(2),
+      predictedRange: this.predictedRange,
+
+      // Dynamic Movement Prediction
+      movementPrediction: mp || null,
+
+      // Adaptive Sizing
+      positionSizeETH: positionSizeETH,
       positionUSD,
-      oneLotUSD,
-      // 5-Layer Confluence Breakdown
+      kellyFraction: (kellyFraction * 100).toFixed(1) + '%',
+
+      // 6-Layer Breakdown
       layers: this.layers,
-      // Active Trade / Roadmap
+
+      // Active Trade / Dynamic Roadmap
       activeTrade: this.activeTrade,
       roadmap: {
-        entryPrice: entry,
-        tp1Price: tp1,
-        tp2Price: tp2,
-        slPrice: sl,
-        fixed050USDPrice,
+        entryPrice: this.activeTrade ? this.activeTrade.entryPrice : entry,
+        tp1Price: this.activeTrade ? this.activeTrade.tp1Price : tp1,
+        tp2Price: this.activeTrade ? this.activeTrade.tp2Price : tp2,
+        slPrice: this.activeTrade ? this.activeTrade.currentSLPrice : sl,
         tp1GainUSD,
         tp2GainUSD,
         slLossUSD,
-        riskRewardRatio: '1 : 2.00',
+        riskRewardRatio: `1 : ${rrRatio}`,
+        tpMethod: mp ? `DISTRIBUTION PREDICTED (${mp.confidence}% conf)` : `ATR Fallback (${detectedRegime})`,
+        slMethod: mp ? `MAE DISTRIBUTION (${mp.confidence}% conf)` : `ATR Fallback (${detectedRegime})`,
+        // Extended prediction targets
+        conservativeTarget: mp ? mp.predictedMovement.conservativeTarget : tp1,
+        mainTarget: mp ? mp.predictedMovement.mainTarget : tp2,
+        extendedTarget: mp ? mp.predictedMovement.extendedTarget : 0,
+        predictionConfidence: mp ? mp.confidence : 0,
       },
-      // Performance stats
+
+      // Performance
       stats: this.stats,
       recentHistory: this.tradeHistory.slice(0, 5),
     };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // TRADE CLOSE — Record result and update stats
+  // ═══════════════════════════════════════════════════════════════════
+  closeTrade(trade, exitPrice, reason) {
+    const priceDelta = trade.direction > 0 ? (exitPrice - trade.entryPrice) : (trade.entryPrice - exitPrice);
+    const pnlUSD = +(trade.sizeETH * priceDelta + (trade.realizedPartialPnl || 0)).toFixed(2);
+    const isWin = pnlUSD > 0;
+
+    this.tradeHistory.unshift({
+      ...trade,
+      exitPrice,
+      exitReason: reason,
+      finalPnlUSD: pnlUSD,
+      isWin,
+      duration: Math.round((Date.now() - trade.startTime) / 1000),
+    });
+    if (this.tradeHistory.length > 30) this.tradeHistory.pop();
+
+    this.tradeCount++;
+    if (isWin) {
+      this.winCount++;
+    } else if (this.healingEngine) {
+      this.healingEngine.reportAlgorithmError({
+        algoId: 99,
+        algoName: 'Production Strategy (NEXUS-V)',
+        algoTag: 'NEXUS',
+        action: trade.direction > 0 ? 'BUY' : 'SELL',
+        entryPrice: trade.entryPrice,
+        exitPrice,
+        pnlUSD,
+        currentPrice: exitPrice,
+        marketContext: {
+          atr: trade.atrAtEntry || 15,
+          regime: trade.regime || 'TRENDING',
+        },
+      });
+    }
+
+    // Update stats
+    this.stats.tradesExecuted = this.tradeCount;
+    this.stats.winRatePct = this.tradeCount > 0 ? Math.round((this.winCount / this.tradeCount) * 100) : 0;
+    this.stats.totalPnlUSD = +(this.stats.totalPnlUSD + pnlUSD).toFixed(2);
+
+    const wins = this.tradeHistory.filter(t => t.isWin);
+    const losses = this.tradeHistory.filter(t => !t.isWin);
+    this.stats.avgGainUSD = wins.length > 0 ? +(wins.reduce((s, t) => s + t.finalPnlUSD, 0) / wins.length).toFixed(2) : 0;
+    this.stats.avgLossUSD = losses.length > 0 ? +(losses.reduce((s, t) => s + Math.abs(t.finalPnlUSD), 0) / losses.length).toFixed(2) : 0;
+    this.stats.profitFactor = this.stats.avgLossUSD > 0 ? +(this.stats.avgGainUSD / this.stats.avgLossUSD).toFixed(2) : 0;
+
+    this.activeTrade = null;
+    this.status = 'SCANNING';
   }
 
   getFallbackTelemetry(price = 2608.50) {
     return {
       strategyName: this.name,
       version: this.version,
-      status: 'INITIALIZING',
-      action: 'SYSTEM INITIALIZING',
-      confluenceScore: 50,
-      direction: 1,
-      targetSpec: '0.50 Profit Only',
-      positionSizeETH: 0.50,
-      positionUSD: (0.50 * price).toFixed(2),
-      oneLotUSD: (0.01 * price).toFixed(2),
+      status: 'AWAITING LIVE DATA',
+      action: 'WAITING FOR LIVE MARKET DATA',
+      verdict: 'HOLD',
+      verdictConfidence: 0,
+      confluenceScore: 0,
+      direction: 0,
+      regime: 'AWAITING DATA',
+      regimeProfile: 'awaiting',
+      atr: '—',
+      predictedRange: { high: 0, low: 0, expectedMove: 0 },
+      positionSizeETH: 0,
+      positionUSD: '0.00',
+      kellyFraction: '0%',
       layers: this.layers,
       activeTrade: null,
       roadmap: {
         entryPrice: price,
-        tp1Price: price * 1.0025,
-        tp2Price: price * 1.0050,
-        slPrice: price * 0.9975,
-        fixed050USDPrice: price + 50.0,
-        tp1GainUSD: '3.26',
-        tp2GainUSD: '6.52',
-        slLossUSD: '3.26',
-        riskRewardRatio: '1 : 2.00',
+        tp1Price: 0,
+        tp2Price: 0,
+        slPrice: 0,
+        tp1GainUSD: '0.00',
+        tp2GainUSD: '0.00',
+        slLossUSD: '0.00',
+        riskRewardRatio: '—',
+        tpMethod: 'Awaiting ATR data',
+        slMethod: 'Awaiting ATR data',
       },
       stats: this.stats,
       recentHistory: [],

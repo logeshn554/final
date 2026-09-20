@@ -10,6 +10,7 @@
 // ═════════════════════════════════════════════════════════════════════
 
 import { clamp, mean, std, rnd } from '../utils/math.js';
+import { STATE } from '../state.js';
 
 export class InstitutionalQuantEngine {
   constructor() {
@@ -126,8 +127,11 @@ export class InstitutionalQuantEngine {
     if (recentTrades && recentTrades.length > 0) {
       const latestTrade = recentTrades[recentTrades.length - 1];
       const dp = latestTrade.price - (prices[Math.max(0, nPrices - 2)] || midPrice);
-      const signedQ = latestTrade.side === 'BUY' ? latestTrade.amount : -latestTrade.amount;
-      this.tradeHistory.push({ dp, q: signedQ });
+      const size = Number(latestTrade.size ?? latestTrade.amount ?? latestTrade.qty ?? 0);
+      const signedQ = (latestTrade.side === 'BUY' ? 1 : -1) * (Number.isFinite(size) ? size : 0);
+      if (Number.isFinite(dp) && Number.isFinite(signedQ) && signedQ !== 0) {
+        this.tradeHistory.push({ dp, q: signedQ });
+      }
       if (this.tradeHistory.length > 50) this.tradeHistory.shift();
     }
 
@@ -332,16 +336,17 @@ export class InstitutionalQuantEngine {
     return this.output;
   }
 
-  getDefaultOutput(price = 3200) {
+  getDefaultOutput(price = ((typeof STATE !== 'undefined' && STATE.price) ? STATE.price : 2608.50)) {
+    const curP = parseFloat(price) || 2608.50;
     return {
       signal: 0.12,
       confidence: 0.90,
       regime: 'HJB OPTIMAL QUOTING',
       avellaneda: {
-        reservationPrice: price,
+        reservationPrice: curP,
         optimalSpread: 0.65,
-        optimalBid: price - 0.32,
-        optimalAsk: price + 0.33,
+        optimalBid: curP - 0.32,
+        optimalAsk: curP + 0.33,
         inventorySkew: 0,
         riskAversionGamma: this.gamma,
         liquidityKappa: this.kappa,

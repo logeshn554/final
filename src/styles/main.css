@@ -102,9 +102,126 @@ body {
   animation: pulse 1s infinite;
 }
 
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+.live-badge.badge-live {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.live-badge.badge-connecting {
+  background: rgba(234, 179, 8, 0.15);
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.live-badge.badge-offline {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.live-badge.badge-simulated {
+  background: rgba(249, 115, 22, 0.15);
+  border-color: #f97316;
+  color: #f97316;
+}
+
+.live-dot.dot-green { background: var(--green); }
+.live-dot.dot-yellow { background: var(--warn); }
+.live-dot.dot-red { background: var(--danger); }
+.live-dot.dot-orange { background: #f97316; }
+
+.btn-header.btn-mode-sim {
+  background: rgba(249, 115, 22, 0.15);
+  border-color: #f97316;
+  color: #f97316;
+}
+
+.btn-header.btn-mode-offline {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: var(--danger);
+  color: var(--danger);
+  animation: pulse-border 1.5s infinite;
+}
+
+.btn-header.btn-mode-connecting {
+  background: rgba(234, 179, 8, 0.15);
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+@keyframes pulse-border {
+  0%, 100% { border-color: var(--danger); }
+  50% { border-color: rgba(239, 68, 68, 0.3); }
+}
+
+/* ── Offline Banner HUD ── */
+.offline-banner {
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.22) 0%, rgba(20, 20, 30, 0.95) 100%);
+  border: 1px solid var(--danger);
+  border-radius: 4px;
+  margin: 6px 8px 0 8px;
+  padding: 8px 14px;
+  box-shadow: 0 4px 15px rgba(239, 68, 68, 0.15);
+  animation: fadeIn 0.3s ease;
+}
+
+.offline-banner-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.offline-icon {
+  font-size: 18px;
+  animation: bounce 1s infinite alternate;
+}
+
+@keyframes bounce {
+  from { transform: translateY(0); }
+  to { transform: translateY(-2px); }
+}
+
+.offline-text-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.offline-text-wrap strong {
+  font-size: 11px;
+  color: var(--danger);
+  letter-spacing: 0.5px;
+  font-family: var(--font-mono);
+}
+
+.offline-text-wrap span {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.btn-banner-sim {
+  background: rgba(249, 115, 22, 0.2);
+  border: 1px solid #f97316;
+  color: #f97316;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.btn-banner-sim:hover {
+  background: rgba(249, 115, 22, 0.35);
+}
+
+.status-danger {
+  color: var(--danger) !important;
+  font-weight: 700;
 }
 
 /* ── Main Layout ── */
@@ -1375,5 +1492,178 @@ canvas { width: 100%; display: block; }
   font-size: 10px;
 }
 
+/* ═══════════════════════════════════════════════════════
+   COMPACT DISPLAY, MOVEMENT & BINANCE FEE STYLES
+   ═══════════════════════════════════════════════════════ */
 
+/* Custom Glowing Scrollbar */
+.compact-table-scroll {
+  overflow-x: auto;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 212, 255, 0.4) rgba(5, 10, 20, 0.8);
+}
+
+.compact-table-scroll::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.compact-table-scroll::-webkit-scrollbar-track {
+  background: rgba(5, 10, 20, 0.85);
+  border-radius: 3px;
+}
+
+.compact-table-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 212, 255, 0.4);
+  border-radius: 3px;
+  box-shadow: 0 0 6px rgba(0, 212, 255, 0.5);
+}
+
+.compact-table-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+
+/* Row Movement & Hover Slide */
+.compact-row {
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), background 0.18s ease;
+}
+
+.compact-row:hover {
+  transform: translateX(3px);
+  background: rgba(0, 212, 255, 0.08) !important;
+}
+
+/* Movement Keyframes */
+@keyframes champion-glow {
+  0%, 100% {
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.2), inset 0 0 8px rgba(16, 185, 129, 0.04);
+    border-color: rgba(16, 185, 129, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 22px rgba(16, 185, 129, 0.42), inset 0 0 14px rgba(16, 185, 129, 0.1);
+    border-color: #10b981;
+  }
+}
+
+.champion-card-animated {
+  animation: champion-glow 3.5s infinite ease-in-out;
+}
+
+@keyframes radar-pulse {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.75;
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+  }
+  70% {
+    transform: scale(1.15);
+    opacity: 1;
+    box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+  }
+  100% {
+    transform: scale(0.9);
+    opacity: 0.75;
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+}
+
+.radar-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  animation: radar-pulse 1.8s infinite ease-in-out;
+  vertical-align: middle;
+}
+
+@keyframes live-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.shimmer-text {
+  background: linear-gradient(90deg, var(--text) 0%, var(--accent) 50%, var(--text) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: live-shimmer 4s infinite linear;
+}
+
+/* Binance Fee Badges */
+.badge-fee {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: #f59e0b;
+  font-size: 7.5px;
+  font-weight: 800;
+  padding: 1px 5px;
+  border-radius: 2px;
+  letter-spacing: 0.3px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+/* Horizontal Scroll Buttons */
+.btn-scroll {
+  background: rgba(0, 212, 255, 0.12);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s ease;
+  box-shadow: 0 0 6px rgba(0, 212, 255, 0.15);
+  user-select: none;
+}
+
+.btn-scroll:hover {
+  background: var(--accent);
+  color: #000;
+  box-shadow: 0 0 12px rgba(0, 212, 255, 0.45);
+  transform: translateY(-1px);
+}
+
+.btn-scroll:active {
+  transform: translateY(0);
+}
+
+/* ── Dynamic Movement Prediction Panel Styles ── */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+#movementPredictionPanel {
+  background: linear-gradient(180deg, rgba(10, 22, 40, 0.95) 0%, rgba(5, 10, 20, 0.98) 100%);
+  border: 1.5px solid rgba(0, 212, 255, 0.35);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4), inset 0 0 15px rgba(0, 212, 255, 0.05);
+  position: relative;
+  overflow: hidden;
+}
+
+#movementPredictionPanel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #00d4ff, #7c3aed, #10b981, #00d4ff);
+  background-size: 200% 100%;
+  animation: gradientShift 6s linear infinite;
+}
+
+@keyframes gradientShift {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
 

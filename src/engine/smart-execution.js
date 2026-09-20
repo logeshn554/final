@@ -83,8 +83,9 @@ export class SmartExecutionEngine {
    * @param {number} currentPrice Current market price
    * @param {number} spread Current spread
    * @param {number} toxicity VPIN or microstructure toxicity score
+   * @param {Array<Object>} recentTrades Recent real Binance trade tape
    */
-  executeSlice(currentPrice, spread, toxicity = 0.2) {
+  executeSlice(currentPrice, spread, toxicity = 0.2, recentTrades = []) {
     if (!this.activeOrder || this.activeOrder.remainingETH <= 0.001) {
       return {
         active: false,
@@ -143,14 +144,30 @@ export class SmartExecutionEngine {
     const bybitAlloc = remainingToRoute * 0.30;
     const dexAlloc = remainingToRoute * 0.15;
 
-    // Temporary price impact on lit venues
-    const litImpact = (sliceSizeETH / 10) * 0.4;
-    const fillPriceLit = order.side === 'BUY'
-      ? currentPrice + (spread / 2) + litImpact
-      : currentPrice - (spread / 2) - litImpact;
+    // Match fill price against real Binance trade executions if available
+    let fillPriceLit;
+    let matchedBinanceTrade = null;
+    if (Array.isArray(recentTrades) && recentTrades.length > 0) {
+      // Find crossing liquidity from real Binance trade tape
+      const opposing = recentTrades.filter(t => order.side === 'BUY' ? t.side === 'SELL' : t.side === 'BUY');
+      matchedBinanceTrade = opposing.length > 0 ? opposing[0] : recentTrades[0];
+      fillPriceLit = matchedBinanceTrade.price;
+    } else {
+      // Temporary price impact on lit venues
+      const litImpact = (sliceSizeETH / 10) * 0.4;
+      fillPriceLit = order.side === 'BUY'
+        ? currentPrice + (spread / 2) + litImpact
+        : currentPrice - (spread / 2) - litImpact;
+    }
 
     if (binanceAlloc > 0.005) {
-      venueFills.push({ venue: 'Binance Perps', size: Math.round(binanceAlloc * 1000) / 1000, price: Math.round(fillPriceLit * 100) / 100, feeBps: 2.0 });
+      venueFills.push({
+        venue: 'Binance Perps',
+        size: Math.round(binanceAlloc * 1000) / 1000,
+        price: Math.round(fillPriceLit * 100) / 100,
+        feeBps: 2.0,
+        binanceTradeId: matchedBinanceTrade ? matchedBinanceTrade.tradeId || matchedBinanceTrade.time : undefined,
+      });
     }
     if (bybitAlloc > 0.005) {
       venueFills.push({ venue: 'Bybit Unified', size: Math.round(bybitAlloc * 1000) / 1000, price: Math.round(fillPriceLit * 100) / 100, feeBps: 2.5 });

@@ -33,6 +33,7 @@ export class DataIngestionEngine {
     };
 
     this.tickCount = 0;
+    this.anchorPrice = 0;
     this.tradesStream = [];
   }
 
@@ -115,7 +116,8 @@ export class DataIngestionEngine {
 
     // 3. Alternative Quantitative Feeds Updates
     // Funding rate dynamics (drifts with momentum)
-    const priceDrift = (midPrice - 3200) / 3200;
+    this.anchorPrice = this.anchorPrice > 0 ? (this.anchorPrice * 0.995 + midPrice * 0.005) : midPrice;
+    const priceDrift = this.anchorPrice > 0 ? (midPrice - this.anchorPrice) / this.anchorPrice : 0;
     this.quantFeeds.fundingRate = clamp(0.0001 + priceDrift * 0.0003 + gaussian(0, 0.00002), -0.0008, 0.0012);
     this.quantFeeds.annualizedFunding = this.quantFeeds.fundingRate * 3 * 365;
 

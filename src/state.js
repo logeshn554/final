@@ -2,10 +2,14 @@
 // GLOBAL STATE — Reactive state store for the entire engine
 // ═══════════════════════════════════════════════════════
 
-import { ALGORITHMS } from './config.js';
+import { ALGORITHMS, MARKET_CONFIG } from './config.js';
 
 function createState() {
   return {
+    // Dynamic Symbol & Instrument
+    symbol: MARKET_CONFIG.defaultSymbol,
+    benchmarkSymbol: MARKET_CONFIG.benchmarkSymbol,
+
     // Market data (Real Binance Live ETH/USDT)
     price: 2608.50,
     prices: [],
@@ -14,8 +18,24 @@ function createState() {
     low24: 2436.40,
     spread: 0.15,
 
-    // OHLCV candles for all 4 synchronized timeframes: 1h, 30m, 15m, 3m
-    candles: { '3m': [], '15m': [], '30m': [], '1h': [] },
+    // Autonomous Error Analysis & Self-Healing Telemetry
+    autonomousHealing: {
+      activeIncidents: [],
+      healingLog: [],
+      fixedAlgosCount: 0,
+      totalErrorsCaught: 0,
+      systemHealth: '100% OPTIMAL',
+      lastRepair: null,
+      autoFixCount: 0,
+      quarantinedCount: 0,
+    },
+
+    // Real Binance Live BTC/USDT Feed for Cointegration & Pairs Trading
+    btcPrice: 65420.00,
+    btcPrices: [],
+
+    // OHLCV candles for all 5 synchronized timeframes: 1h, 30m, 15m, 3m, 1m
+    candles: { '1m': [], '3m': [], '15m': [], '30m': [], '1h': [] },
     selectedTimeframe: '15m',
 
     // Multi-Timeframe Candlestick Confluence State
@@ -25,6 +45,7 @@ function createState() {
         '30m': { score: 0, trend: 'FLAT', patterns: [] },
         '15m': { score: 0, trend: 'FLAT', patterns: [] },
         '3m': { score: 0, trend: 'FLAT', patterns: [] },
+        '1m': { score: 0, trend: 'FLAT', patterns: [] },
       },
       confluenceScore: 0,
       alignment: 'ANALYZING MULTI-TIMEFRAME CANDLES',
@@ -256,6 +277,14 @@ function createState() {
     // NEXUS-V Institutional Production Strategy Engine State
     productionStrategy: null,
 
+    // Dynamic Movement Prediction Engine State
+    movementPrediction: null,
+
+    // Prediction History & Feedback
+    predictionHistory: [],           // rolling array of completed predictions + outcomes
+    failureAnalysis: null,           // latest failure analysis report
+    modelPerformance: null,          // per-regime model performance tracking
+
     // Algorithm Divergence & Explainability Report
     algoDivergence: null,
 
@@ -265,8 +294,30 @@ function createState() {
     // 6-Month Training Audit
     trainingAudit: null,
 
-    // Live Binance WebSocket state (Active by default)
-    isLiveBinance: true,
+    // Connection & Market Feed Liveness
+    connection: {
+      mode: 'live', // Always 'live' — NO simulation mode
+      status: 'connecting', // 'connected' | 'connecting' | 'disconnected' | 'offline'
+      provider: 'DETECTING', // 'BINANCE' | 'COINBASE' | 'BYBIT'
+      isOnline: typeof navigator !== 'undefined' ? (navigator.onLine !== false) : true,
+      lastHeartbeat: 0,
+      latencyMs: 0,
+      packetsReceived: 0,
+      lastRealPrice: 0,
+      errorMessage: '',
+    },
+
+    // Live exchange feed state
+    get isLiveBinance() {
+      return this.connection.status === 'connected';
+    },
+    set isLiveBinance(val) {
+      if (val) {
+        this.connection.status = 'connected';
+      } else {
+        this.connection.status = 'disconnected';
+      }
+    },
 
     // Logs
     logs: [],

@@ -35,7 +35,13 @@ export class PortfolioConstructionEngine {
    * @param {Array<number>} returnHistory Return series for covariance estimation
    * @param {number} currentPosition Current held position in ETH
    */
-  optimize(compositeAlpha, currentPrice, spread, returnHistory, currentPosition) {
+  optimize(compositeAlpha, currentPrice, spread, returnHistory, currentPosition, equity = 10000) {
+    // Dynamically scale notional and position constraints with current equity and asset price
+    if (equity && equity > 0) this.targetNotionalUSD = equity;
+    if (currentPrice && currentPrice > 0) {
+      this.maxPositionETH = Math.max(0.5, Math.round((this.targetNotionalUSD * 0.5) / currentPrice * 100) / 100);
+    }
+
     // 1. Covariance Estimation with Ledoit-Wolf Shrinkage
     // Sample variance
     const sampleVar = returnHistory.length >= 10

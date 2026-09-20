@@ -76,23 +76,41 @@ function computeBollinger(prices, period = 20, numStd = 2) {
 }
 
 /**
- * Compute ATR (Average True Range)
+ * Compute ATR (Average True Range) using true OHLC candles without synthetic approximation
  */
-function computeATR(prices, period = 14) {
-  if (prices.length < period + 1) return 0;
-  let atr = 0;
-  const start = prices.length - period;
-  for (let i = start; i < prices.length; i++) {
-    const high = prices[i] * (1 + Math.random() * 0.002); // Approximate
-    const low = prices[i] * (1 - Math.random() * 0.002);
-    const tr = Math.max(
-      high - low,
-      Math.abs(high - prices[i - 1]),
-      Math.abs(low - prices[i - 1])
-    );
-    atr += tr;
+export function computeATR(candlesOrPrices, period = 14) {
+  if (!candlesOrPrices || candlesOrPrices.length < 2) return 0;
+  
+  // If array of OHLC candle objects
+  if (typeof candlesOrPrices[0] === 'object' && candlesOrPrices[0] !== null && 'high' in candlesOrPrices[0]) {
+    const len = candlesOrPrices.length;
+    const count = Math.min(len - 1, period);
+    if (count <= 0) return 0;
+    let trSum = 0;
+    const start = len - count;
+    for (let i = start; i < len; i++) {
+      const c = candlesOrPrices[i];
+      const prevClose = candlesOrPrices[i - 1].close;
+      const tr = Math.max(
+        c.high - c.low,
+        Math.abs(c.high - prevClose),
+        Math.abs(c.low - prevClose)
+      );
+      trSum += tr;
+    }
+    return trSum / count;
   }
-  return atr / period;
+
+  // Fallback if only raw price closes provided (close-to-close true range without Math.random())
+  const prices = candlesOrPrices;
+  const count = Math.min(prices.length - 1, period);
+  if (count <= 0) return 0;
+  let trSum = 0;
+  const start = prices.length - count;
+  for (let i = start; i < prices.length; i++) {
+    trSum += Math.abs(prices[i] - prices[i - 1]);
+  }
+  return trSum / count;
 }
 
 /**
@@ -199,8 +217,10 @@ export function extractFeatures(state) {
   const unrealPnL = position !== 0 ? (price - entryPrice) / entryPrice * Math.sign(position) : 0;
   features[15] = clamp(unrealPnL * 100, -5, 5);
 
-  // 16: ATR (normalized)
-  features[16] = clamp(computeATR(prices) / (price * 0.01 || 1), 0, 3);
+  // 16: ATR (normalized using real OHLC candles)
+  const activeCandles = (state.candles && state.candles[state.selectedTimeframe || '15m']) || [];
+  const rawATR = activeCandles.length >= 2 ? computeATR(activeCandles, 14) : computeATR(prices, 14);
+  features[16] = clamp(rawATR / (price * 0.01 || 1), 0, 3);
 
   // 17: Candlestick Pattern recognition composite score [-3, 3]
   if (state.candlestickAnalysis && typeof state.candlestickAnalysis.score === 'number') {
@@ -253,30 +273,58 @@ export function discretizeState(features, numBins = 5) {
 }
 
 /**
- * Compute reward for a transition
+ * Compute reward for a transition with real executable microstructure costs
+ * Incorporates: Binance fees (taker 0.04% / maker 0.02%), bid-ask spread,
+ * Kyle's Lambda market impact, intraday funding rate, and non-linear drawdown penalty
  * @param {number} action - 0:buy, 1:hold, 2:sell
  * @param {number} priceBefore - price at action time
  * @param {number} priceAfter - price at next step
  * @param {number} position - current position
- * @returns {number} reward
+ * @param {Object} options - execution parameters { spread, feeRate, kylesLambda, fundingRate, drawdown, size }
+ * @returns {number} net executable reward
  */
-export function computeReward(action, priceBefore, priceAfter, position) {
-  const priceChange = (priceAfter - priceBefore) / priceBefore;
+export function computeReward(action, priceBefore, priceAfter, position, options = {}) {
+  const priceChange = (priceAfter - priceBefore) / (priceBefore || 1);
   let reward = 0;
 
-  // PnL from position
-  reward += position * priceChange * 10; // Scale for learning
+  // Gross PnL from position
+  reward += position * priceChange * 10;
 
-  // Action effect on next position
+  // Directional action alignment
   if (action === 0) { // BUY
-    reward += priceChange * 5; // Benefit from price going up
+    reward += priceChange * 5;
   } else if (action === 2) { // SELL
-    reward -= priceChange * 5; // Benefit from price going down
+    reward -= priceChange * 5;
   }
 
-  // Transaction cost
+  // Real Executable Trading Friction Costs
   if (action !== 1) {
-    reward -= 0.001; // Small transaction cost
+    // 1. Binance Taker/Maker Trading Fee (default 0.04% taker)
+    const feeRate = options.feeRate ?? 0.0004;
+    reward -= feeRate * 10;
+
+    // 2. Bid-Ask Half Spread Crossing Cost
+    const spread = options.spread ?? 0.15;
+    const spreadCost = (spread / (2 * priceBefore)) * 10;
+    reward -= spreadCost;
+
+    // 3. Kyle's Lambda Adverse Selection Market Impact
+    const lambda = options.kylesLambda ?? 0.015;
+    const tradeSize = options.size ?? 0.05;
+    const marketImpact = lambda * tradeSize * 5;
+    reward -= marketImpact;
+  }
+
+  // 4. Perpetual Funding Rate Cost (e.g. 0.01% / 8h)
+  const fundingRate = options.fundingRate ?? 0.0001;
+  const fundingCost = Math.abs(position) * Math.abs(fundingRate) * 2;
+  reward -= fundingCost;
+
+  // 5. Risk-Averse Drawdown Penalty (penalize drawdowns above 1.5%)
+  const dd = options.drawdown ?? 0;
+  if (dd > 1.5) {
+    const ddPenalty = Math.pow((dd - 1.5) * 0.1, 2);
+    reward -= ddPenalty;
   }
 
   return clamp(reward, -2, 2);

@@ -95,4 +95,23 @@ export const HYPERPARAMS = {
   // Discretization (for tabular methods)
   numDiscreteStates: 50,
   numPriceBins: 10,
+
+  // Autonomous Self-Healing & Dynamic Adaptation
+  healing: {
+    autoFixEnabled: true,
+    errorSensitivity: 0.15,
+    minTradesForEvaluation: 3,
+    quarantineThresholdLosses: 4,
+    recalibrationBoostPct: 0.08,
+    volatilityExpansionBuffer: 1.25,
+    chopConfidenceHurdle: 0.58,
+  },
+};
+
+// Dynamic Market Instrument Configuration
+export const MARKET_CONFIG = {
+  defaultSymbol: 'ETHUSDT',
+  benchmarkSymbol: 'BTCUSDT',
+  baseAsset: 'ETH',
+  quoteAsset: 'USDT',
 };
