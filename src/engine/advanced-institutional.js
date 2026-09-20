@@ -29,7 +29,9 @@ export class InstitutionalQuantEngine {
     this.hawkesMu = 0.85;    // Baseline intensity μ
     this.hawkesAlpha = 0.52; // Self-excitation jump α
     this.hawkesBeta = 0.78;  // Exponential decay speed β
-    this.tradeTimestamps = []; // High-res tick arrival buffer
+    this.tradeTimestamps = []; // High-res tick arrival buffer from genuine exchange trades
+    this.seenTradeIds = new Set();
+    this.lastOuPriceTime = 0;
     this.branchingRatio = 0.66; // η = α / β (criticality threshold = 1.0)
     this.cascadeStatus = 'NORMAL';
 
@@ -94,10 +96,21 @@ export class InstitutionalQuantEngine {
     // 2. HAWKES SELF-EXCITING POINT PROCESS (Order Arrival Cascades)
     // ─────────────────────────────────────────────────────────────────
     // λ(t) = μ + ∑_{t_i < t} α * exp(-β * (t - t_i))
-    const nowSec = Date.now() / 1000;
-    this.tradeTimestamps.push(nowSec);
-    if (this.tradeTimestamps.length > 40) this.tradeTimestamps.shift();
+    // Uses verified exchange trade event timestamps — NOT JavaScript application loop ticks
+    if (recentTrades && recentTrades.length > 0) {
+      for (const trade of recentTrades) {
+        const tradeKey = trade.tradeId || `${trade.time}_${trade.price}`;
+        if (!this.seenTradeIds.has(tradeKey)) {
+          this.seenTradeIds.add(tradeKey);
+          const tradeSec = (trade.time || Date.now()) / 1000;
+          this.tradeTimestamps.push(tradeSec);
+        }
+      }
+      if (this.seenTradeIds.size > 200) this.seenTradeIds.clear();
+      if (this.tradeTimestamps.length > 50) this.tradeTimestamps.splice(0, this.tradeTimestamps.length - 50);
+    }
 
+    const nowSec = (recentTrades && recentTrades[0]?.time ? recentTrades[0].time / 1000 : Date.now() / 1000);
     let hawkesIntensity = this.hawkesMu;
     for (let i = 0; i < this.tradeTimestamps.length - 1; i++) {
       const dt = Math.max(0.01, nowSec - this.tradeTimestamps[i]);
@@ -105,8 +118,9 @@ export class InstitutionalQuantEngine {
     }
 
     // Adaptive branching ratio estimation η = α / β
-    const recentActivityFreq = this.tradeTimestamps.length / Math.max(1, (nowSec - this.tradeTimestamps[0]));
-    this.branchingRatio = clamp(0.40 + (recentActivityFreq / 8) * 0.45, 0.20, 0.98);
+    const timeSpan = Math.max(1, (nowSec - (this.tradeTimestamps[0] || (nowSec - 10))));
+    const recentActivityFreq = this.tradeTimestamps.length / timeSpan;
+    this.branchingRatio = clamp(0.35 + (recentActivityFreq / 10) * 0.45, 0.15, 0.98);
 
     if (this.branchingRatio >= 0.88) {
       this.cascadeStatus = 'CASCADE_WARNING';
@@ -199,9 +213,15 @@ export class InstitutionalQuantEngine {
         sumX += x; sumY += y; sumXY += x * y; sumX2 += x * x;
       }
       const b = clamp((m * sumXY - sumX * sumY) / (m * sumX2 - sumX * sumX || 1), 0.70, 0.99);
-      const dt = 1.0 / 60.0; // 1 second in minute units
-      this.ouTheta = clamp(-Math.log(b) / dt, 0.05, 1.5);
-      this.ouHalfLife = Math.max(0.5, Math.log(2) / this.ouTheta); // in minutes
+      // Genuine elapsed observation time between market ticks (in minutes)
+      const currentPriceTime = STATE.dataFeedTimes?.priceTime || Date.now();
+      const prevPriceTime = this.lastOuPriceTime || (currentPriceTime - 1000);
+      const dtSec = Math.max(0.2, (currentPriceTime - prevPriceTime) / 1000);
+      const dtMin = dtSec / 60.0;
+      this.lastOuPriceTime = currentPriceTime;
+
+      this.ouTheta = clamp(-Math.log(b) / dtMin, 0.05, 1.5);
+      this.ouHalfLife = Math.max(0.1, Math.log(2) / this.ouTheta); // in minutes
       this.ouSigma = std(slice) || 2.0;
 
       // Bertram (2010) optimal entry threshold b_entry = μ ± 1.25 * σ / √(2θ)
@@ -336,24 +356,24 @@ export class InstitutionalQuantEngine {
     return this.output;
   }
 
-  getDefaultOutput(price = ((typeof STATE !== 'undefined' && STATE.price) ? STATE.price : 2608.50)) {
-    const curP = parseFloat(price) || 2608.50;
+  getDefaultOutput(price = ((typeof STATE !== 'undefined' && STATE.price) ? STATE.price : 0)) {
+    const curP = parseFloat(price) || 0;
     return {
-      signal: 0.12,
-      confidence: 0.90,
-      regime: 'HJB OPTIMAL QUOTING',
+      signal: 0,
+      confidence: 0,
+      regime: 'AWAITING_EXCHANGE_FEED',
       avellaneda: {
         reservationPrice: curP,
-        optimalSpread: 0.65,
-        optimalBid: curP - 0.32,
-        optimalAsk: curP + 0.33,
+        optimalSpread: 0.25,
+        optimalBid: curP > 0 ? curP - 0.12 : 0,
+        optimalAsk: curP > 0 ? curP + 0.13 : 0,
         inventorySkew: 0,
         riskAversionGamma: this.gamma,
         liquidityKappa: this.kappa,
       },
-      kyle: { lambda: 0.042, adverseSelectionBps: 0.85, informedToxicity: 'LOW' },
-      hawkes: { branchingRatio: 0.65, cascadeStatus: 'NORMAL', volMultiplier: 1.05, arrivalIntensity: 2.5 },
-      ou: { halfLifeMin: 4.5, theta: 0.15, spreadZ: 0.1, upperEntry: price + 8, lowerEntry: price - 8 },
+      kyle: { lambda: 0.02, adverseSelectionBps: 0, informedToxicity: 'UNKNOWN' },
+      hawkes: { branchingRatio: 0.5, cascadeStatus: 'NORMAL', volMultiplier: 1.0, arrivalIntensity: 0 },
+      ou: { halfLifeMin: 0, theta: 0, spreadZ: 0, upperEntry: curP, lowerEntry: curP },
       kalman: { fairValue: price, driftBps: 0.02, divergenceBps: 0.0 },
       queue: { delaySec: 1.5, bookCurvature: 0.05 },
     };

@@ -23,6 +23,7 @@ import {
   PortfolioOptimizationModel,
   MicrostructureMetrics
 } from '../utils/quant-math.js';
+import { STATE } from '../state.js';
 
 export class TradingAlgorithmsSuite {
   constructor() {
@@ -183,11 +184,17 @@ export class TradingAlgorithmsSuite {
     const kalmanDivergenceBps = ((currentPrice / (kalmanFair || 1) - 1) * 10000);
     const kalmanSignal = -clamp(kalmanDivergenceBps / 25.0, -1, 1);
 
-    // B. Rolling Engle-Granger Cointegration with real Binance BTC feed
-    const btcPrice = options.btcPrice || (quantFeeds && quantFeeds.btcPrice) || 65420.0;
-    const cointegRes = this.cointeg.update(currentPrice, btcPrice);
-    const cointegZ = cointegRes.zScore;
-    const cointegSignal = -clamp(cointegZ * 0.45, -1, 1);
+    // B. Rolling Engle-Granger Cointegration with real Binance BTC feed (Zero synthetic fallback)
+    const btcPrice = options.btcPrice || (quantFeeds && quantFeeds.btcPrice) || STATE.btcPrice;
+    let cointegZ = 0;
+    let cointegSignal = 0;
+    let cointegBeta = 0;
+    if (btcPrice && btcPrice > 0 && currentPrice && currentPrice > 0) {
+      const cointegRes = this.cointeg.update(currentPrice, btcPrice);
+      cointegZ = cointegRes.zScore;
+      cointegBeta = cointegRes.beta;
+      cointegSignal = -clamp(cointegZ * 0.45, -1, 1);
+    }
 
     // C. Ornstein-Uhlenbeck Parameter Regressor
     const ouRes = this.ou.fit(prices.slice(-30));
@@ -234,8 +241,8 @@ export class TradingAlgorithmsSuite {
     this.categories.statistical.active = `OU Half-Life: ${ouHalfLifeMin.toFixed(1)}m · Cointeg Z: ${cointegZ.toFixed(2)}σ · Kalman Diff: ${kalmanDivergenceBps.toFixed(1)}bps`;
     this.categories.statistical.metrics = {
       kalmanFair: `$${kalmanFair.toFixed(2)}`,
-      cointegZ: `${cointegZ.toFixed(2)}σ`,
-      cointegBeta: cointegRes.beta.toFixed(4),
+      cointegZ: btcPrice ? `${cointegZ.toFixed(2)}σ` : 'Awaiting BTC Feed',
+      cointegBeta: btcPrice ? (typeof cointegBeta === 'number' ? cointegBeta.toFixed(4) : cointegBeta) : '--',
       ouHalfLife: `${ouHalfLifeMin.toFixed(1)} min`,
       hmmState,
       bayesWinProb: `${(bayesWinProb * 100).toFixed(1)}%`,

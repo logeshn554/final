@@ -18,13 +18,11 @@ export class SmartExecutionEngine {
     this.temporaryImpactEta = 0.08;   // Temporary price impact coeff
     this.kappa = Math.sqrt((this.timingRiskLambda * Math.pow(this.volatilitySigma, 2)) / this.temporaryImpactEta) || 0.35;
 
-    // Venue directory for Smart Order Routing (SOR)
+    // Execution venues for simulated Paper Trading against real exchange L2 order books
     this.venues = [
-      { id: 'binance', name: 'Binance Perps', type: 'LIT', fillProb: 0.98, feeBps: 2.0, executedShare: 0 },
-      { id: 'bybit', name: 'Bybit Unified', type: 'LIT', fillProb: 0.95, feeBps: 2.5, executedShare: 0 },
-      { id: 'coinbase', name: 'Coinbase Inst.', type: 'LIT', fillProb: 0.92, feeBps: 3.5, executedShare: 0 },
-      { id: 'darkpool', name: 'Liquidnet ATS', type: 'DARK', fillProb: 0.72, feeBps: 1.0, executedShare: 0 },
-      { id: 'dex', name: 'Uniswap v3 DEX', type: 'DEX', fillProb: 0.99, feeBps: 5.0, executedShare: 0 },
+      { id: 'binance', name: 'Binance L2 Depth', type: 'PAPER_L2', fillProb: 1.0, feeBps: 2.0, executedShare: 0 },
+      { id: 'coinbase', name: 'Coinbase L2 Depth', type: 'PAPER_L2', fillProb: 1.0, feeBps: 3.5, executedShare: 0 },
+      { id: 'bybit', name: 'Bybit L2 Depth', type: 'PAPER_L2', fillProb: 1.0, feeBps: 2.5, executedShare: 0 },
     ];
 
     // Historical execution metrics
@@ -123,57 +121,54 @@ export class SmartExecutionEngine {
 
     sliceSizeETH = clamp(sliceSizeETH, 0.01, order.remainingETH);
 
-    // Smart Order Routing (SOR) venue allocation
+    // Smart Order Routing (SOR) venue allocation across real exchange L2 books
     const venueFills = [];
     let remainingToRoute = sliceSizeETH;
 
-    // Dark pool check first (route up to 30% if low toxicity)
-    const darkPoolAlloc = toxicity < 0.35 ? remainingToRoute * 0.28 : 0;
-    if (darkPoolAlloc > 0.01) {
-      venueFills.push({
-        venue: 'Liquidnet ATS (Dark)',
-        size: Math.round(darkPoolAlloc * 1000) / 1000,
-        price: currentPrice, // midpoint execution, 0 market impact
-        feeBps: 1.0,
-      });
-      remainingToRoute -= darkPoolAlloc;
-    }
-
-    // Allocate remainder across Lit and DEX based on fill probability
-    const binanceAlloc = remainingToRoute * 0.55;
-    const bybitAlloc = remainingToRoute * 0.30;
-    const dexAlloc = remainingToRoute * 0.15;
-
-    // Match fill price against real Binance trade executions if available
+    // Match fill price against real exchange trade executions if available
     let fillPriceLit;
-    let matchedBinanceTrade = null;
+    let matchedExchangeTrade = null;
     if (Array.isArray(recentTrades) && recentTrades.length > 0) {
-      // Find crossing liquidity from real Binance trade tape
+      // Find crossing liquidity from real exchange trade tape
       const opposing = recentTrades.filter(t => order.side === 'BUY' ? t.side === 'SELL' : t.side === 'BUY');
-      matchedBinanceTrade = opposing.length > 0 ? opposing[0] : recentTrades[0];
-      fillPriceLit = matchedBinanceTrade.price;
+      matchedExchangeTrade = opposing.length > 0 ? opposing[0] : recentTrades[0];
+      fillPriceLit = matchedExchangeTrade.price;
     } else {
-      // Temporary price impact on lit venues
-      const litImpact = (sliceSizeETH / 10) * 0.4;
+      // Order book spread + microstructure impact
+      const litImpact = (sliceSizeETH / 10) * 0.25;
       fillPriceLit = order.side === 'BUY'
         ? currentPrice + (spread / 2) + litImpact
         : currentPrice - (spread / 2) - litImpact;
     }
 
+    const binanceAlloc = remainingToRoute * 0.60;
+    const coinbaseAlloc = remainingToRoute * 0.25;
+    const bybitAlloc = remainingToRoute * 0.15;
+
     if (binanceAlloc > 0.005) {
       venueFills.push({
-        venue: 'Binance Perps',
+        venue: 'Binance L2 Depth',
         size: Math.round(binanceAlloc * 1000) / 1000,
         price: Math.round(fillPriceLit * 100) / 100,
         feeBps: 2.0,
-        binanceTradeId: matchedBinanceTrade ? matchedBinanceTrade.tradeId || matchedBinanceTrade.time : undefined,
+        tradeId: matchedExchangeTrade ? matchedExchangeTrade.tradeId || matchedExchangeTrade.time : undefined,
+      });
+    }
+    if (coinbaseAlloc > 0.005) {
+      venueFills.push({
+        venue: 'Coinbase L2 Depth',
+        size: Math.round(coinbaseAlloc * 1000) / 1000,
+        price: Math.round(fillPriceLit * 100) / 100,
+        feeBps: 3.5,
       });
     }
     if (bybitAlloc > 0.005) {
-      venueFills.push({ venue: 'Bybit Unified', size: Math.round(bybitAlloc * 1000) / 1000, price: Math.round(fillPriceLit * 100) / 100, feeBps: 2.5 });
-    }
-    if (dexAlloc > 0.005) {
-      venueFills.push({ venue: 'Uniswap v3 DEX', size: Math.round(dexAlloc * 1000) / 1000, price: Math.round((fillPriceLit + 0.1) * 100) / 100, feeBps: 5.0 });
+      venueFills.push({
+        venue: 'Bybit L2 Depth',
+        size: Math.round(bybitAlloc * 1000) / 1000,
+        price: Math.round(fillPriceLit * 100) / 100,
+        feeBps: 2.5,
+      });
     }
 
     // Compute effective weighted execution price of this slice

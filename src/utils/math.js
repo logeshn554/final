@@ -9,11 +9,15 @@ export function rnd(a, b) { return a + Math.random() * (b - a); }
 export function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
 /** Format number to fixed decimals */
-export function fmt(v, dec = 2) { return v.toFixed(dec); }
+export function fmt(v, dec = 2) {
+  if (v == null || isNaN(v)) return '--';
+  return Number(v).toFixed(dec);
+}
 
 /** Format price with $ and commas */
 export function fmtPrice(p) {
-  return '$' + p.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  if (p == null || isNaN(p)) return '$--';
+  return '$' + Number(p).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 /** Standard normal random (Box-Muller) */
@@ -31,10 +35,11 @@ export function gaussian(mean = 0, std = 1) {
 
 /** Softmax over array */
 export function softmax(arr) {
+  if (!arr || arr.length === 0) return [];
   const max = Math.max(...arr);
   const exps = arr.map(x => Math.exp(x - max));
   const sum = exps.reduce((a, b) => a + b, 0);
-  return exps.map(e => e / sum);
+  return exps.map(e => e / (sum || 1));
 }
 
 /** Sigmoid */
@@ -51,23 +56,23 @@ export function leakyRelu(x, alpha = 0.01) { return x > 0 ? x : alpha * x; }
 
 /** Mean of array */
 export function mean(arr) {
-  if (arr.length === 0) return 0;
+  if (!arr || arr.length === 0) return 0;
   return arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
 /** Standard deviation */
 export function std(arr) {
-  if (arr.length < 2) return 0;
+  if (!arr || arr.length < 2) return 0;
   const m = mean(arr);
   const variance = arr.reduce((sum, x) => sum + (x - m) ** 2, 0) / (arr.length - 1);
   return Math.sqrt(variance);
 }
 
 /** Min of array */
-export function arrMin(arr) { return Math.min(...arr); }
+export function arrMin(arr) { return arr && arr.length > 0 ? Math.min(...arr) : 0; }
 
 /** Max of array */
-export function arrMax(arr) { return Math.max(...arr); }
+export function arrMax(arr) { return arr && arr.length > 0 ? Math.max(...arr) : 0; }
 
 /** Dot product */
 export function dot(a, b) {

@@ -39,6 +39,11 @@ export class BinanceLiveStream {
     this.coinbaseWsUrl = 'wss://ws-feed.exchange.coinbase.com';
     this.coinbaseRestBase = 'https://api.exchange.coinbase.com';
     this.bybitRestBase = 'https://api.bybit.com';
+    this.binanceFuturesUrls = [
+      'https://fapi.binance.com',
+      'https://fapi.binance.vision',
+    ];
+    this._derivativesSyncCounter = 0;
   }
 
   /**
@@ -97,6 +102,80 @@ export class BinanceLiveStream {
       return await this.fetchWithTimeout(`${this.bybitRestBase}${path}`, {}, 2500);
     } catch (e) {
       return null;
+    }
+  }
+
+  /**
+   * Fetch from Binance Futures (Derivatives) mirrors
+   */
+  async fetchBinanceFutures(path) {
+    for (const base of this.binanceFuturesUrls) {
+      try {
+        const data = await this.fetchWithTimeout(`${base}${path}`, {}, 2500);
+        if (data) return data;
+      } catch (e) {}
+    }
+    return null;
+  }
+
+  /**
+   * Synchronize real derivatives data: Funding Rate & Open Interest
+   */
+  async syncDerivatives() {
+    if (!this.isBrowserOnline()) return;
+
+    try {
+      // 1. Try Binance Futures for Premium Index & Funding Rate
+      const prem = await this.fetchBinanceFutures('/fapi/v1/premiumIndex?symbol=ETHUSDT');
+      if (prem && prem.lastFundingRate !== undefined) {
+        const fundingRate = parseFloat(prem.lastFundingRate);
+        const markPrice = prem.markPrice ? parseFloat(prem.markPrice) : STATE.price;
+        const nextFundingTime = prem.nextFundingTime ? parseInt(prem.nextFundingTime) : 0;
+
+        STATE.layer1.quantFeeds.fundingRate = fundingRate;
+        STATE.layer1.quantFeeds.annualizedFunding = fundingRate * 3 * 365;
+        STATE.layer1.quantFeeds.markPrice = markPrice;
+        STATE.layer1.quantFeeds.nextFundingTime = nextFundingTime;
+        STATE.layer1.quantFeeds.fundingStatus = 'REAL_LIVE_BINANCE';
+        if (STATE.dataFeedTimes) STATE.dataFeedTimes.derivativesTime = Date.now();
+      }
+
+      // 2. Try Binance Futures for Open Interest
+      const oi = await this.fetchBinanceFutures('/fapi/v1/openInterest?symbol=ETHUSDT');
+      if (oi && oi.openInterest) {
+        const newOI = parseFloat(oi.openInterest);
+        const prevOI = STATE.layer1.quantFeeds.openInterestETH || newOI;
+        STATE.layer1.quantFeeds.deltaOI = Math.round(newOI - prevOI);
+        STATE.layer1.quantFeeds.openInterestETH = Math.round(newOI);
+        STATE.layer1.quantFeeds.oiStatus = 'REAL_LIVE_BINANCE';
+        if (STATE.dataFeedTimes) STATE.dataFeedTimes.derivativesTime = Date.now();
+        return;
+      }
+
+      // 3. Fallback to Bybit Linear derivatives if Binance Futures is geographically blocked
+      const bybitDeriv = await this.fetchBybit('/v5/market/tickers?category=linear&symbol=ETHUSDT');
+      if (bybitDeriv?.result?.list?.[0]) {
+        const d = bybitDeriv.result.list[0];
+        if (d.fundingRate !== undefined) {
+          const f = parseFloat(d.fundingRate);
+          STATE.layer1.quantFeeds.fundingRate = f;
+          STATE.layer1.quantFeeds.annualizedFunding = f * 3 * 365;
+          STATE.layer1.quantFeeds.fundingStatus = 'REAL_LIVE_BYBIT';
+        }
+        if (d.openInterest !== undefined) {
+          const newOI = parseFloat(d.openInterest);
+          const prevOI = STATE.layer1.quantFeeds.openInterestETH || newOI;
+          STATE.layer1.quantFeeds.deltaOI = Math.round(newOI - prevOI);
+          STATE.layer1.quantFeeds.openInterestETH = Math.round(newOI);
+          STATE.layer1.quantFeeds.oiStatus = 'REAL_LIVE_BYBIT';
+        }
+        if (STATE.dataFeedTimes) STATE.dataFeedTimes.derivativesTime = Date.now();
+      }
+    } catch (e) {
+      // Keep real status as UNKNOWN if unavailable rather than fabricating numbers
+      if (!STATE.layer1.quantFeeds.fundingStatus) {
+        STATE.layer1.quantFeeds.fundingStatus = 'UNAVAILABLE';
+      }
     }
   }
 
@@ -262,6 +341,27 @@ export class BinanceLiveStream {
   }
 
   /**
+   * Synchronize multi-timeframe candles
+   */
+  async syncKlines() {
+    if (!this.isBrowserOnline()) return;
+
+    const timeframes = ['1h', '30m', '15m', '3m', '1m'];
+    for (const tf of timeframes) {
+      try {
+        const rawKlines = await this.fetchBinance(`/api/v3/klines?symbol=ETHUSDT&interval=${tf}&limit=60`);
+        if (Array.isArray(rawKlines) && rawKlines.length > 0) {
+          if (STATE.mtfEngine && typeof STATE.mtfEngine.loadBinanceKlines === 'function') {
+            STATE.mtfEngine.loadBinanceKlines(tf, rawKlines);
+            STATE.candles[tf] = STATE.mtfEngine.candles[tf];
+          }
+          if (STATE.dataFeedTimes) STATE.dataFeedTimes.klinesTime = Date.now();
+        }
+      } catch (e) {}
+    }
+  }
+
+  /**
    * Record real live market tick into STATE
    */
   recordLivePrice(livePrice, high24, low24, vol24, provider, latencyMs = 25) {
@@ -281,6 +381,7 @@ export class BinanceLiveStream {
     const now = Date.now();
     this.lastMsgTime = now;
     this.activeProvider = provider;
+    if (STATE.dataFeedTimes) STATE.dataFeedTimes.priceTime = now;
 
     STATE.connection.isOnline = true;
     STATE.connection.status = 'connected';
@@ -307,6 +408,7 @@ export class BinanceLiveStream {
     STATE.btcPrice = btcPrice;
     STATE.btcPrices.push(btcPrice);
     if (STATE.btcPrices.length > 200) STATE.btcPrices.shift();
+    if (STATE.dataFeedTimes) STATE.dataFeedTimes.btcTime = Date.now();
     if (this.callbacks.onBtcTicker) this.callbacks.onBtcTicker(btcPrice);
   }
 
@@ -315,6 +417,7 @@ export class BinanceLiveStream {
     if (!STATE.layer1.recentTrades.some(t => t.tradeId === trade.tradeId)) {
       STATE.layer1.recentTrades.unshift(trade);
       if (STATE.layer1.recentTrades.length > 50) STATE.layer1.recentTrades.pop();
+      if (STATE.dataFeedTimes) STATE.dataFeedTimes.tradesTime = trade.time || Date.now();
       if (this.callbacks.onTrade) this.callbacks.onTrade(trade);
     }
   }
@@ -342,6 +445,7 @@ export class BinanceLiveStream {
                          (parsedBids[0].size + parsedAsks[0].size || 1);
 
       STATE.spread = Math.round(spread * 100) / 100;
+      if (STATE.dataFeedTimes) STATE.dataFeedTimes.depthTime = Date.now();
       STATE.layer1.orderBook = {
         bids: parsedBids,
         asks: parsedAsks,
@@ -384,6 +488,7 @@ export class BinanceLiveStream {
     await this.syncBtcTicker();
     await this.syncDepth();
     await this.syncTrades();
+    await this.syncDerivatives();
     this.syncKlines();
 
     if (!initialPrice && !this.isBrowserOnline()) {
@@ -597,6 +702,13 @@ export class BinanceLiveStream {
       if (this._klineSyncCounter >= 8) {
         this._klineSyncCounter = 0;
         this.syncKlines();
+      }
+
+      // 4. Periodically refresh real derivatives (Funding rate & Open Interest)
+      this._derivativesSyncCounter = (this._derivativesSyncCounter || 0) + 1;
+      if (this._derivativesSyncCounter >= 12) {
+        this._derivativesSyncCounter = 0;
+        this.syncDerivatives();
       }
     }, 2000);
   }

@@ -9,13 +9,13 @@ import { ALGO_PROFILES } from './algo-diagnostics.js';
 const STORAGE_KEY = 'antigravity_algo_capital_benchmark_v3_dynamic';
 
 export class AlgoCapitalBenchmarkEngine {
-  constructor(initialPrice = 2608.50) {
+  constructor(initialPrice = 0) {
     this.name = '34-Algorithm $10 Capital Efficiency & Real-Area Live Win Rate Engine';
     this.initialCapitalPerAlgo = 10.00;
     this.totalAllocatedCapital = 34 * 10.00; // $340.00 USD
     this.algoAccounts = {};
     this.historyTicks = 0;
-    this.lastPrice = Number(initialPrice) || 2608.50;
+    this.lastPrice = Number(initialPrice) || 0;
 
     // Load existing progress so it continues; only resets when reset button clicked
     this.init(this.lastPrice, false);
@@ -59,8 +59,8 @@ export class AlgoCapitalBenchmarkEngine {
    * @param {number} currentPrice Initial asset price
    * @param {boolean} forceFresh Whether to wipe and force fresh $10 start
    */
-  init(currentPrice = 2608.50, forceFresh = false) {
-    const validPrice = Number(currentPrice) && !isNaN(currentPrice) && currentPrice > 100 ? Number(currentPrice) : (this.lastPrice || 2608.50);
+  init(currentPrice = 0, forceFresh = false) {
+    const validPrice = Number(currentPrice) && !isNaN(currentPrice) && currentPrice > 100 ? Number(currentPrice) : (this.lastPrice || 0);
     this.lastPrice = validPrice;
 
     if (!forceFresh && this.loadFromStorage()) {
@@ -111,13 +111,14 @@ export class AlgoCapitalBenchmarkEngine {
    * @param {Object} signals Live signals dictionary
    * @param {Object} movementPrediction Dynamic movement prediction engine output
    */
-  tick(currentPrice = 2608.50, signals = {}, movementPrediction = null) {
+  tick(currentPrice = 0, signals = {}, movementPrediction = null) {
     const p = Number(currentPrice);
     if (!p || isNaN(p) || p <= 100) {
-      currentPrice = this.lastPrice || 2608.50;
+      currentPrice = this.lastPrice || 0;
     } else {
       currentPrice = p;
     }
+    if (!currentPrice || currentPrice <= 0) return;
     this.lastPrice = currentPrice;
     this.historyTicks++;
 
@@ -297,8 +298,9 @@ export class AlgoCapitalBenchmarkEngine {
    * @param {number} steps Number of ticks to step forward
    * @param {number} currentPrice Starting ETH price
    */
-  fastSimulate(steps = 10, currentPrice = 2608.50, movementPrediction = null) {
-    let p = Number(currentPrice) || this.lastPrice || 2608.50;
+  fastSimulate(steps = 10, currentPrice = 0, movementPrediction = null) {
+    let p = Number(currentPrice) || this.lastPrice || 0;
+    if (p <= 0) return this.getReport();
     for (let i = 0; i < steps; i++) {
       // Micro realistic fluctuation between -0.06% and +0.06%
       const delta = (Math.random() - 0.485) * 0.0006;
@@ -319,13 +321,13 @@ export class AlgoCapitalBenchmarkEngine {
    * Triggered ONLY when the user explicitly clicks the Reset button.
    * @param {number} currentPrice Current asset price
    */
-  reset(currentPrice = 2608.50) {
+  reset(currentPrice = 0) {
     try {
       if (typeof localStorage !== 'undefined') {
         localStorage.removeItem(STORAGE_KEY);
       }
     } catch (e) {}
-    this.init(currentPrice, true);
+    this.init(currentPrice || this.lastPrice || 0, true);
   }
 
   /**

@@ -280,70 +280,74 @@ export class MovementPredictionEngine {
     // Last prediction for feedback tracking
     this.lastPrediction = null;
     this.predictionCount = 0;
-
-    // Bootstrap: seed analog database with synthetic initial data
-    this._seedInitialAnalogs();
   }
 
   /**
-   * Seed the analog database with realistic initial data so predictions
-   * work from the very first tick without waiting for 2000 observations
+   * Seed the analog database from REAL historical market candles
+   * Derives actual conditional excursions (MFE/MAE) from genuine exchange price bars
+   * @param {Array<Object>} candles Array of { timestamp, open, high, low, close, volume }
    */
-  _seedInitialAnalogs() {
-    const regimes = ['TRENDING', 'MEAN_REVERTING', 'VOLATILE', 'COMPRESSION', 'BREAKOUT'];
-    const regimeProfiles = {
-      TRENDING:       { moveMean: 12, moveStd: 6, adverseMean: 5, adverseStd: 3 },
-      MEAN_REVERTING: { moveMean: 6, moveStd: 3, adverseMean: 4, adverseStd: 2 },
-      VOLATILE:       { moveMean: 20, moveStd: 12, adverseMean: 12, adverseStd: 7 },
-      COMPRESSION:    { moveMean: 8, moveStd: 4, adverseMean: 3, adverseStd: 2 },
-      BREAKOUT:       { moveMean: 18, moveStd: 8, adverseMean: 7, adverseStd: 4 },
-    };
+  seedFromRealCandles(candles) {
+    if (!Array.isArray(candles) || candles.length < 20) return;
 
-    for (const regime of regimes) {
-      const profile = regimeProfiles[regime];
-      for (let i = 0; i < 60; i++) {
-        const features = new Float64Array(8);
-        for (let f = 0; f < 8; f++) features[f] = randn() * 0.5;
+    const windowSize = 10;
+    for (let i = 0; i < candles.length - windowSize; i++) {
+      const baseCandle = candles[i];
+      let maxUp = 0;
+      let maxDown = 0;
 
-        // Regime-characteristic feature signatures
-        if (regime === 'TRENDING') { features[0] = Math.abs(randn()) * 1.5; features[2] = randn() * 0.3 + 0.5; }
-        if (regime === 'VOLATILE') { features[1] = Math.abs(randn()) * 2; }
-        if (regime === 'COMPRESSION') { features[1] = Math.abs(randn()) * 0.3; }
-        if (regime === 'MEAN_REVERTING') { features[3] = randn() * 1.5; }
-        if (regime === 'BREAKOUT') { features[0] = Math.abs(randn()) * 2; features[1] = Math.abs(randn()) * 1.5; }
-
-        const direction = randn() > 0 ? 1 : -1;
-        const favorableMove = Math.abs(randn() * profile.moveStd + profile.moveMean);
-        const adverseMove = Math.abs(randn() * profile.adverseStd + profile.adverseMean);
-
-        this.analogDB.store({
-          features,
-          regime,
-          atr: profile.moveMean * 0.6,
-          price: 2500 + randn() * 100,
-          direction,
-          outcome: {
-            maxUp: direction > 0 ? favorableMove : adverseMove,
-            maxDown: direction > 0 ? adverseMove : favorableMove,
-            netMove: direction * (favorableMove - adverseMove * 0.3),
-            finalMove: direction * favorableMove * 0.7,
-          },
-        });
+      for (let j = 1; j <= windowSize; j++) {
+        const future = candles[i + j];
+        const highDiff = future.high - baseCandle.close;
+        const lowDiff = baseCandle.close - future.low;
+        if (highDiff > maxUp) maxUp = highDiff;
+        if (lowDiff > maxDown) maxDown = lowDiff;
       }
+
+      const finalMove = candles[i + windowSize].close - baseCandle.close;
+      const atrEst = Math.max(1.0, baseCandle.high - baseCandle.low);
+      const direction = finalMove >= 0 ? 1 : -1;
+
+      // Extract real normalized feature signature from candle geometry & momentum
+      const features = new Float64Array(8);
+      features[0] = clamp((baseCandle.close - baseCandle.open) / atrEst, -2, 2); // Body ratio
+      features[1] = clamp((baseCandle.high - Math.max(baseCandle.open, baseCandle.close)) / atrEst, 0, 2); // Upper shadow
+      features[2] = clamp((Math.min(baseCandle.open, baseCandle.close) - baseCandle.low) / atrEst, 0, 2); // Lower shadow
+      features[3] = clamp(finalMove / atrEst, -3, 3); // Momentum
+
+      const regime = maxUp + maxDown > atrEst * 4 ? 'VOLATILE' :
+                     Math.abs(finalMove) > atrEst * 2 ? 'TRENDING' :
+                     'MEAN_REVERTING';
+
+      this.analogDB.store({
+        features,
+        regime,
+        atr: atrEst,
+        price: baseCandle.close,
+        direction,
+        outcome: {
+          maxUp: Math.round(maxUp * 100) / 100,
+          maxDown: Math.round(maxDown * 100) / 100,
+          netMove: Math.round(finalMove * 100) / 100,
+          finalMove: Math.round(finalMove * 100) / 100,
+        },
+      });
     }
 
-    // Pre-train quantile predictors on seed data
-    const samples = this.analogDB.records.map(r => ({
-      features: Array.from(r.features),
-      movement: r.outcome.maxUp,
-    }));
-    this.upsidePredictor.train(samples);
+    // Train quantile predictors on real candle excursion samples
+    if (this.analogDB.records.length >= 10) {
+      const upSamples = this.analogDB.records.map(r => ({
+        features: Array.from(r.features),
+        movement: r.outcome.maxUp,
+      }));
+      this.upsidePredictor.train(upSamples);
 
-    const downSamples = this.analogDB.records.map(r => ({
-      features: Array.from(r.features),
-      movement: r.outcome.maxDown,
-    }));
-    this.downsidePredictor.train(downSamples);
+      const downSamples = this.analogDB.records.map(r => ({
+        features: Array.from(r.features),
+        movement: r.outcome.maxDown,
+      }));
+      this.downsidePredictor.train(downSamples);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

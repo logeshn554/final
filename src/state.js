@@ -10,13 +10,38 @@ function createState() {
     symbol: MARKET_CONFIG.defaultSymbol,
     benchmarkSymbol: MARKET_CONFIG.benchmarkSymbol,
 
-    // Market data (Real Binance Live ETH/USDT)
-    price: 2608.50,
+    // Market data (Real Live ETH/USDT from Binance / Coinbase / Bybit)
+    price: null,
     prices: [],
     volumes: [],
-    high24: 2612.00,
-    low24: 2436.40,
-    spread: 0.15,
+    high24: null,
+    low24: null,
+    spread: null,
+
+    // Data Quality Gate (RIG-Micro: Strict Verification Before Strategy Evaluation)
+    dataQualityGate: {
+      isReady: false,
+      status: 'AWAITING_EXCHANGE_DATA',
+      checks: {
+        priceFresh: false,
+        depthFresh: false,
+        tradesFresh: false,
+        btcFresh: false,
+        klinesFresh: false,
+        derivativesFresh: false,
+      },
+      lastCheckTime: 0,
+    },
+
+    // Granular live packet timestamps for latency and staleness tracking
+    dataFeedTimes: {
+      priceTime: 0,
+      btcTime: 0,
+      depthTime: 0,
+      tradesTime: 0,
+      derivativesTime: 0,
+      klinesTime: 0,
+    },
 
     // Autonomous Error Analysis & Self-Healing Telemetry
     autonomousHealing: {
@@ -30,8 +55,8 @@ function createState() {
       quarantinedCount: 0,
     },
 
-    // Real Binance Live BTC/USDT Feed for Cointegration & Pairs Trading
-    btcPrice: 65420.00,
+    // Real Live BTC/USDT Feed for Cointegration & Pairs Trading (Zero Synthetic Fallback)
+    btcPrice: null,
     btcPrices: [],
 
     // OHLCV candles for all 5 synchronized timeframes: 1h, 30m, 15m, 3m, 1m
@@ -129,18 +154,21 @@ function createState() {
     // ═══════════════════════════════════════════════════════
     activeLayerTab: 'overview', // 'overview' | 'l1' | 'l2' | 'l3' | 'l4' | 'l5' | 'l6'
 
-    // Layer 1: Data Ingestion
+    // Layer 1: Data Ingestion (Real Exchange Feeds Only)
     layer1: {
-      orderBook: { bids: [], asks: [], microPrice: 3241.5, midPrice: 3241.5, spread: 0.25, totalBidVol: 45, totalAskVol: 42 },
+      orderBook: { bids: [], asks: [], microPrice: null, midPrice: null, spread: null, totalBidVol: 0, totalAskVol: 0 },
       quantFeeds: {
-        fundingRate: 0.00012,
-        annualizedFunding: 0.1314,
-        openInterestETH: 482500,
-        deltaOI: 1250,
-        liquidationsLong: 142000,
-        liquidationsShort: 38000,
-        darkPoolPrints: [],
-        blockTradeVol24h: 184500000,
+        fundingRate: null,
+        annualizedFunding: null,
+        openInterestETH: null,
+        deltaOI: null,
+        markPrice: null,
+        nextFundingTime: null,
+        fundingStatus: 'INITIALIZING',
+        oiStatus: 'INITIALIZING',
+        largeBlockPrints: [],
+        blockTradeVol24h: 0,
+        btcPrice: null,
       },
       recentTrades: [],
     },
@@ -189,8 +217,8 @@ function createState() {
         cvar95USD: 0,
         portfolioBeta: 1.15,
         deltaETH: 0,
-        syntheticGamma: 0.04,
-        syntheticVega: 18.5,
+        gammaProxy: 0,
+        vegaProxy: 0,
         currentDrawdownPct: 0,
         dailyPnLUSD: 0,
         dailyPnLSigma: 0,
@@ -325,19 +353,6 @@ function createState() {
 }
 
 export const STATE = createState();
-
-// Initialize price series with real Binance market levels
-(function initPrices() {
-  let p = 2608.50;
-  for (let i = 0; i < 100; i++) {
-    const change = (Math.random() - 0.48) * 2.5 + Math.sin(i / 8) * 1.5;
-    p += change;
-    p = Math.max(2436, Math.min(2620, p));
-    STATE.prices.push(Math.round(p * 100) / 100);
-    STATE.volumes.push(1000 + Math.random() * 5000);
-  }
-  STATE.price = STATE.prices[STATE.prices.length - 1];
-})();
 
 // Initialize algorithm signals
 ALGORITHMS.forEach(a => {

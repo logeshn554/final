@@ -7,6 +7,7 @@
 
 import { clamp, mean, std, rnd, dot, sigmoid, tanh } from '../utils/math.js';
 import { LSTMCell, RealGBDT, RealRandomForest, RollingCointegrationEngine } from '../utils/quant-math.js';
+import { STATE } from '../state.js';
 
 export class AlphaSignalEngine {
   constructor() {
@@ -90,19 +91,28 @@ export class AlphaSignalEngine {
     const ethPrice = orderBook.midPrice;
 
     // ── 1. Statistical Arbitrage (Stat-Arb) ──
-    // Rolling Cointegration with real live BTC feed
-    const btcPrice = (quantFeeds && quantFeeds.btcPrice) || 65420.0;
-    const cointegResult = this.cointegEngine.update(ethPrice, btcPrice);
-    const currentSpread = cointegResult.spread;
-    const zScore = cointegResult.zScore;
+    // Rolling Cointegration with real live BTC feed (Zero synthetic fallback)
+    const btcPrice = (quantFeeds && quantFeeds.btcPrice) || STATE.btcPrice;
+    let currentSpread = 0;
+    let zScore = 0;
 
-    // Fade when spread exceeds ±2.0 standard deviations
-    if (zScore >= 2.0) {
-      this.statArbSignal = -clamp((zScore - 1.5) * 0.5, 0.4, 1.0); // Overpriced spread -> Short ETH
-    } else if (zScore <= -2.0) {
-      this.statArbSignal = clamp((-zScore - 1.5) * 0.5, 0.4, 1.0); // Underpriced spread -> Long ETH
-    } else if (Math.abs(zScore) < 0.5) {
-      this.statArbSignal *= 0.8; // Mean reverted -> close/fade
+    if (btcPrice && btcPrice > 0 && ethPrice && ethPrice > 0) {
+      const cointegResult = this.cointegEngine.update(ethPrice, btcPrice);
+      currentSpread = cointegResult.spread;
+      zScore = cointegResult.zScore;
+
+      // Fade when spread exceeds ±2.0 standard deviations
+      if (zScore >= 2.0) {
+        this.statArbSignal = -clamp((zScore - 1.5) * 0.5, 0.4, 1.0); // Overpriced spread -> Short ETH
+      } else if (zScore <= -2.0) {
+        this.statArbSignal = clamp((-zScore - 1.5) * 0.5, 0.4, 1.0); // Underpriced spread -> Long ETH
+      } else if (Math.abs(zScore) < 0.5) {
+        this.statArbSignal *= 0.8; // Mean reverted -> close/fade
+      }
+    } else {
+      this.statArbSignal = 0;
+      currentSpread = 0;
+      zScore = 0;
     }
 
     // ── 2. Cross-Sectional Factor Investing ──

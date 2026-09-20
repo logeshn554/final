@@ -108,13 +108,15 @@ export function renderConnectionStatus() {
     // Active Genuine Live Connection
     const provName = provider || 'EXCHANGE';
     const latStr = latencyMs ? `${latencyMs}ms` : '<30ms';
+    const gateReady = STATE.dataQualityGate?.isReady;
+    const gateLabel = gateReady ? 'GATE: OPEN (VERIFIED)' : 'GATE: VERIFYING';
     if (btn) {
       btn.textContent = `● LIVE: ${provName}`;
       btn.className = 'btn-header active-live';
     }
     if (badge) {
-      badge.className = 'live-badge badge-live';
-      badge.innerHTML = `<div class="live-dot dot-green"></div>LIVE ${provName} · ${latStr}`;
+      badge.className = gateReady ? 'live-badge badge-live' : 'live-badge badge-connecting';
+      badge.innerHTML = `<div class="live-dot ${gateReady ? 'dot-green' : 'dot-yellow'}"></div>LIVE ${provName} · ${gateLabel}`;
     }
     if (feedProvider) {
       feedProvider.textContent = `${provName} LIVE`;
@@ -183,6 +185,9 @@ export function renderVoteBreakdown() {
 export function renderAlgoGrid() {
   const grid = document.getElementById('algoGrid');
   if (!grid) return;
+  const prevScrollTop = grid.scrollTop;
+  const prevScrollLeft = grid.scrollLeft;
+
   const filtered = STATE.algoFilter === 'all'
     ? ALGORITHMS
     : ALGORITHMS.filter(a => a.cat === STATE.algoFilter);
@@ -196,7 +201,7 @@ export function renderAlgoGrid() {
     const sc = signColor(sig.signal);
     const pct = ((sig.signal + 1) / 2 * 100).toFixed(0);
     const arrow = signArrow(sig.signal);
-    const winRateVal = diag.currentWinRate || 68.5;
+    const winRateVal = diag.currentWinRate != null ? Number(diag.currentWinRate) : 68.5;
     const winCol = winRateVal >= 75 ? 'var(--green)' : (winRateVal >= 65 ? 'var(--accent)' : 'var(--warn)');
     const isBest = a.id === bestAlgoId;
     
@@ -204,15 +209,15 @@ export function renderAlgoGrid() {
     const isBuy = diag.isBuy !== undefined ? diag.isBuy : (sig.signal >= 0 || (sig.signal === 0 && a.id % 2 === 0));
     const actionText = isBuy ? 'BUY' : 'SELL';
     const actionCol = isBuy ? 'var(--green)' : 'var(--red)';
-    const curPrice = STATE.price || 2608.50;
+    const curPrice = STATE.price || (STATE.prices.length > 0 ? STATE.prices[STATE.prices.length - 1] : 0);
 
     // Dynamic predicted movements from algo diagnostic state
-    const upMove = diag.predictedUpMove !== undefined ? diag.predictedUpMove : (curPrice * 0.005);
-    const downMove = diag.predictedDownMove !== undefined ? diag.predictedDownMove : (curPrice * 0.0025);
-    const tpPrice = diag.tpPrice || (isBuy ? curPrice + upMove : curPrice - upMove);
-    const slPrice = diag.slPrice || (isBuy ? curPrice - downMove : curPrice + downMove);
-    const consRange = diag.predictedConservative !== undefined ? diag.predictedConservative : (upMove * 0.6);
-    const extRange = diag.predictedExtended !== undefined ? diag.predictedExtended : (upMove * 1.5);
+    const upMove = diag.predictedUpMove != null ? Number(diag.predictedUpMove) : (curPrice * 0.005);
+    const downMove = diag.predictedDownMove != null ? Number(diag.predictedDownMove) : (curPrice * 0.0025);
+    const tpPrice = diag.tpPrice != null ? Number(diag.tpPrice) : (isBuy ? curPrice + upMove : curPrice - upMove);
+    const slPrice = diag.slPrice != null ? Number(diag.slPrice) : (isBuy ? curPrice - downMove : curPrice + downMove);
+    const consRange = diag.predictedConservative != null ? Number(diag.predictedConservative) : (upMove * 0.6);
+    const extRange = diag.predictedExtended != null ? Number(diag.predictedExtended) : (upMove * 1.5);
     const tpAreaLabel = isBuy ? 'BUY TP (UP TARGET)' : 'SELL TP (DOWN TARGET)';
     const slAreaLabel = isBuy ? 'BUY SL (RISK CUT)' : 'SELL SL (RISK CUT)';
 
@@ -249,13 +254,16 @@ export function renderAlgoGrid() {
       </div>
 
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:3px;">
-        <span class="algo-conf">conf: ${(sig.conf * 100).toFixed(0)}%</span>
+        <span class="algo-conf">conf: ${((sig.conf || 0.5) * 100).toFixed(0)}%</span>
         <span style="font-size:6.5px;color:var(--green);font-weight:700;">
           ✓ AUTONOMOUS
         </span>
       </div>
     </div>`;
   }).join('');
+
+  grid.scrollTop = prevScrollTop;
+  grid.scrollLeft = prevScrollLeft;
 }
 
 export function renderRegime() {
@@ -306,16 +314,26 @@ export function renderPOMDP() {
 export function renderOrderBook() {
   const el = document.getElementById('orderbook');
   if (!el) return;
-  const asks = [], bids = [];
-  for (let i = 0; i < 5; i++) {
-    asks.push({ p: STATE.price + (5 - i) * 0.8 + rnd(0, 0.4), q: rnd(2, 40).toFixed(2) });
-    bids.push({ p: STATE.price - i * 0.8 - rnd(0, 0.4), q: rnd(2, 40).toFixed(2) });
+  const ob = (STATE.layer1?.orderBook?.bids?.length) ? STATE.layer1.orderBook : STATE.orderBook;
+  const asks = (ob?.asks || []).slice(0, 5);
+  const bids = (ob?.bids || []).slice(0, 5);
+  if (asks.length === 0 && bids.length === 0) {
+    el.innerHTML = '<div style="padding:10px;text-align:center;color:var(--muted);font-size:11px;">Awaiting Exchange Order Book...</div>';
+    return;
   }
-  const spread = (asks[4].p - bids[0].p).toFixed(2);
+  const spread = ob?.spread != null ? (typeof ob.spread === 'number' ? ob.spread.toFixed(2) : ob.spread) : '--';
   el.innerHTML =
-    asks.reverse().map(a => `<div class="ob-row ob-ask"><span>${fmtPrice(a.p)}</span><span>${a.q}</span></div>`).join('') +
+    [...asks].reverse().map(a => {
+      const p = a.price != null ? a.price : a.p;
+      const q = a.size != null ? a.size : a.q;
+      return `<div class="ob-row ob-ask"><span>${fmtPrice(p)}</span><span>${q != null ? Number(q).toFixed(2) : '--'}</span></div>`;
+    }).join('') +
     `<div class="ob-spread">SPREAD: $${spread}</div>` +
-    bids.map(b => `<div class="ob-row ob-bid"><span>${fmtPrice(b.p)}</span><span>${b.q}</span></div>`).join('');
+    bids.map(b => {
+      const p = b.price != null ? b.price : b.p;
+      const q = b.size != null ? b.size : b.q;
+      return `<div class="ob-row ob-bid"><span>${fmtPrice(p)}</span><span>${q != null ? Number(q).toFixed(2) : '--'}</span></div>`;
+    }).join('');
 }
 
 export function renderRiskEngine() {
@@ -435,10 +453,14 @@ export function renderExecEngine() {
 export function renderLog() {
   const el = document.getElementById('sysLog');
   if (!el) return;
+  const prevScroll = el.scrollTop;
   el.innerHTML = STATE.logs.slice(0, 30).map(l => {
     const c = l.type === 'buy' ? 'var(--green)' : l.type === 'sell' ? 'var(--red)' : l.type === 'warn' ? 'var(--warn)' : 'var(--text)';
     return `<div class="log-entry"><span class="log-time">${l.ts}</span><span class="log-msg" style="color:${c}">${l.msg}</span></div>`;
   }).join('');
+  if (prevScroll > 0) {
+    el.scrollTop = prevScroll;
+  }
 }
 
 export function renderUptime() {
@@ -570,63 +592,74 @@ function renderLayer1Data(container) {
 
   const bidsHTML = (ob.bids || []).slice(0, 8).map((b, i) =>
     `<div class="ob-depth-row">
-      <span class="ob-price bid">$${b.price.toFixed(2)}</span>
-      <span class="ob-vol">${b.size.toFixed(2)}</span>
-      <div class="ob-bar-wrap"><div class="ob-bar bid-fill" style="width:${Math.min(100, b.size * 6)}%"></div></div>
-      <span class="ob-orders">${b.orders} ord</span>
+      <span class="ob-price bid">$${b.price != null ? Number(b.price).toFixed(2) : '--'}</span>
+      <span class="ob-vol">${b.size != null ? Number(b.size).toFixed(2) : '--'}</span>
+      <div class="ob-bar-wrap"><div class="ob-bar bid-fill" style="width:${Math.min(100, (b.size || 0) * 6)}%"></div></div>
+      <span class="ob-orders">${b.orders || 1} ord</span>
     </div>`
   ).join('');
 
   const asksHTML = (ob.asks || []).slice(0, 8).map((a, i) =>
     `<div class="ob-depth-row">
-      <span class="ob-price ask">$${a.price.toFixed(2)}</span>
-      <span class="ob-vol">${a.size.toFixed(2)}</span>
-      <div class="ob-bar-wrap"><div class="ob-bar ask-fill" style="width:${Math.min(100, a.size * 6)}%"></div></div>
-      <span class="ob-orders">${a.orders} ord</span>
+      <span class="ob-price ask">$${a.price != null ? Number(a.price).toFixed(2) : '--'}</span>
+      <span class="ob-vol">${a.size != null ? Number(a.size).toFixed(2) : '--'}</span>
+      <div class="ob-bar-wrap"><div class="ob-bar ask-fill" style="width:${Math.min(100, (a.size || 0) * 6)}%"></div></div>
+      <span class="ob-orders">${a.orders || 1} ord</span>
     </div>`
   ).join('');
 
-  const darkPrintsHTML = (qf.darkPoolPrints || []).slice(0, 5).map(p =>
+  const blockPrints = qf.largeBlockPrints || qf.darkPoolPrints || [];
+  const darkPrintsHTML = blockPrints.slice(0, 5).map(p =>
     `<div class="dp-print-row">
       <span class="dp-time">${p.ts}</span>
       <span class="dp-venue">${p.venue}</span>
       <span class="dp-side ${p.side === 'BUY' ? 'bid' : 'ask'}">${p.side}</span>
-      <span class="dp-size">${p.size} ETH</span>
-      <span class="dp-price">$${fmtPrice(p.price)}</span>
-      <span class="dp-notional">$${(p.notionalUSD / 1000).toFixed(0)}k</span>
+      <span class="dp-size">${p.size != null ? Number(p.size).toFixed(2) : '--'} ETH</span>
+      <span class="dp-price">${fmtPrice(p.price)}</span>
+      <span class="dp-notional">$${p.notionalUSD != null ? (p.notionalUSD / 1000).toFixed(0) : '--'}k</span>
     </div>`
-  ).join('') || '<div class="panel-sub">Waiting for institutional block prints...</div>';
+  ).join('') || '<div class="panel-sub" style="padding:10px 0;opacity:0.6;">Awaiting verified exchange trades ≥ 8 ETH...</div>';
+
+  const fundingDisp = qf.fundingRate !== null
+    ? `${(qf.fundingRate * 100).toFixed(4)}%`
+    : 'Awaiting Feed';
+  const aprDisp = qf.annualizedFunding !== null
+    ? `${(qf.annualizedFunding * 100).toFixed(2)}%`
+    : 'Awaiting Feed';
+  const oiDisp = qf.openInterestETH !== null
+    ? `${(qf.openInterestETH / 1000).toFixed(1)}k ETH`
+    : 'Awaiting Feed';
 
   container.innerHTML = `
     <div class="layer-detail-header">
-      <h3 class="layer-title"><span class="lc-badge">LAYER 1</span> DATA INGESTION · L2/L3 TICK PIPELINE</h3>
-      <div class="layer-meta">Micro-Price: <span style="color:var(--accent)">$${fmtPrice(ob.microPrice)}</span> · Spread: $${ob.spread} · Latency: 1.2μs</div>
+      <h3 class="layer-title"><span class="lc-badge">LAYER 1</span> DATA INGESTION · REAL L2 EXCHANGE PIPELINE</h3>
+      <div class="layer-meta">Micro-Price: <span style="color:var(--accent)">$${ob.microPrice ? fmtPrice(ob.microPrice) : '--'}</span> · Spread: $${ob.spread ? ob.spread : '--'} · Exchange Latency: ${STATE.connection.latencyMs || 25}ms</div>
     </div>
     <div class="layer-grid-2col">
       <div>
-        <div class="panel-sub" style="margin-bottom:6px;">L2/L3 ORDER BOOK DEPTH (10 LEVELS TICK-BY-TICK)</div>
+        <div class="panel-sub" style="margin-bottom:6px;">REAL L2 ORDER BOOK DEPTH (${ob.status || 'EXCHANGE STREAM'})</div>
         <div class="ob-depth-container">
           <div class="ob-depth-col">
             <div class="ob-head"><span>BID PX</span><span>QTY</span><span>DEPTH</span><span>ORDS</span></div>
-            ${bidsHTML}
+            ${bidsHTML || '<div style="padding:12px;opacity:0.5;">Connecting to L2 stream...</div>'}
           </div>
           <div class="ob-depth-col">
             <div class="ob-head"><span>ASK PX</span><span>QTY</span><span>DEPTH</span><span>ORDS</span></div>
-            ${asksHTML}
+            ${asksHTML || '<div style="padding:12px;opacity:0.5;">Connecting to L2 stream...</div>'}
           </div>
         </div>
       </div>
       <div>
-        <div class="panel-sub" style="margin-bottom:6px;">ALTERNATIVE QUANTITATIVE FEEDS (NO NLP / NEWS)</div>
+        <div class="panel-sub" style="margin-bottom:6px;">GENUINE DERIVATIVES FEEDS (${qf.fundingStatus || 'Binance Futures'})</div>
         <div class="stat-grid" style="margin-bottom:10px;">
-          <div class="stat-box"><div class="stat-k">Funding (8h)</div><div class="stat-v" style="color:var(--accent)">+${(qf.fundingRate * 100).toFixed(4)}%</div></div>
-          <div class="stat-box"><div class="stat-k">Funding (APR)</div><div class="stat-v">+${(qf.annualizedFunding * 100).toFixed(2)}%</div></div>
-          <div class="stat-box"><div class="stat-k">Open Interest</div><div class="stat-v">${(qf.openInterestETH / 1000).toFixed(1)}k ETH</div></div>
-          <div class="stat-box"><div class="stat-k">Delta OI (1m)</div><div class="stat-v" style="color:${qf.deltaOI >= 0 ? 'var(--green)' : 'var(--red)'}">${qf.deltaOI >= 0 ? '+' : ''}${qf.deltaOI}</div></div>
-          <div class="stat-box"><div class="stat-k">Long Liq (1h)</div><div class="stat-v" style="color:var(--red)">$${(qf.liquidationsLong / 1000).toFixed(0)}k</div></div>
-          <div class="stat-box"><div class="stat-k">Short Liq (1h)</div><div class="stat-v" style="color:var(--green)">$${(qf.liquidationsShort / 1000).toFixed(0)}k</div></div>
+          <div class="stat-box"><div class="stat-k">Funding (8h)</div><div class="stat-v" style="color:var(--accent)">${fundingDisp}</div></div>
+          <div class="stat-box"><div class="stat-k">Funding (APR)</div><div class="stat-v">${aprDisp}</div></div>
+          <div class="stat-box"><div class="stat-k">Open Interest</div><div class="stat-v">${oiDisp}</div></div>
+          <div class="stat-box"><div class="stat-k">Delta OI</div><div class="stat-v" style="color:${(qf.deltaOI || 0) >= 0 ? 'var(--green)' : 'var(--red)'}">${qf.deltaOI !== null ? ((qf.deltaOI >= 0 ? '+' : '') + qf.deltaOI) : '--'}</div></div>
+          <div class="stat-box"><div class="stat-k">Mark Price</div><div class="stat-v" style="color:var(--accent)">$${qf.markPrice ? fmtPrice(qf.markPrice) : '--'}</div></div>
+          <div class="stat-box"><div class="stat-k">Data Gate</div><div class="stat-v" style="color:${STATE.dataQualityGate?.isReady ? 'var(--green)' : 'var(--warn)'}">${STATE.dataQualityGate?.isReady ? 'VERIFIED' : 'GATED'}</div></div>
         </div>
-        <div class="panel-sub" style="margin-bottom:4px;">INSTITUTIONAL DARK POOL / ATS BLOCK PRINTS</div>
+        <div class="panel-sub" style="margin-bottom:4px;">VERIFIED LARGE BLOCK TRADES (FILTERED ≥ 8 ETH FROM REAL TAPE)</div>
         <div class="dp-prints-wrap">${darkPrintsHTML}</div>
       </div>
     </div>
@@ -773,13 +806,13 @@ function renderLayer4Execution(container) {
       </div>
 
       <div>
-        <div class="panel-sub" style="margin-bottom:6px;">SMART ORDER ROUTING (SOR) VENUE ALLOCATION</div>
+        <div class="panel-sub" style="margin-bottom:6px;">PAPER ORDER ROUTING ACROSS REAL L2 EXCHANGE BOOKS</div>
         <div class="venue-fills-wrap" style="margin-bottom:10px;">${venuesHTML}</div>
         <div class="stat-grid">
-          <div class="stat-box"><div class="stat-k">Binance Lit</div><div class="stat-v">55%</div></div>
-          <div class="stat-box"><div class="stat-k">Bybit Unified</div><div class="stat-v">30%</div></div>
-          <div class="stat-box"><div class="stat-k">Liquidnet Dark</div><div class="stat-v" style="color:var(--accent3)">15% ATS</div></div>
-          <div class="stat-box"><div class="stat-k">Slippage vs P0</div><div class="stat-v" style="color:var(--green)">${l4.slippageBps} bps</div></div>
+          <div class="stat-box"><div class="stat-k">Binance L2 Depth</div><div class="stat-v">60%</div></div>
+          <div class="stat-box"><div class="stat-k">Coinbase L2 Depth</div><div class="stat-v">25%</div></div>
+          <div class="stat-box"><div class="stat-k">Bybit L2 Depth</div><div class="stat-v">15%</div></div>
+          <div class="stat-box"><div class="stat-k">Realized Slippage</div><div class="stat-v" style="color:var(--green)">${l4.slippageBps} bps</div></div>
         </div>
       </div>
     </div>
@@ -805,11 +838,11 @@ function renderLayer5Risk(container) {
           <div class="stat-box"><div class="stat-k">Daily Loss Z</div><div class="stat-v">${m.dailyPnLSigma}σ (limit -3σ)</div></div>
         </div>
 
-        <div class="panel-sub" style="margin-bottom:6px;">PORTFOLIO GREEKS & SENSITIVITIES</div>
+        <div class="panel-sub" style="margin-bottom:6px;">PORTFOLIO RISK PROXIES & SENSITIVITIES</div>
         <div class="stat-grid">
           <div class="stat-box"><div class="stat-k">Delta (ETH)</div><div class="stat-v">${m.deltaETH} ETH</div></div>
-          <div class="stat-box"><div class="stat-k">Gamma Curv</div><div class="stat-v">${m.syntheticGamma}</div></div>
-          <div class="stat-box"><div class="stat-k">Vega Sensitivity</div><div class="stat-v">$${m.syntheticVega}/vol%</div></div>
+          <div class="stat-box"><div class="stat-k">Gamma Proxy</div><div class="stat-v">${m.gammaProxy || m.syntheticGamma || 0}</div></div>
+          <div class="stat-box"><div class="stat-k">Vega Proxy</div><div class="stat-v">$${m.vegaProxy || m.syntheticVega || 0}/vol%</div></div>
           <div class="stat-box"><div class="stat-k">Portfolio Beta</div><div class="stat-v">${m.portfolioBeta}β</div></div>
         </div>
       </div>
@@ -1022,6 +1055,8 @@ export function renderCandlesticks() {
     `;
   }).join('');
 
+  const prevHistScroll = document.getElementById('candlestickHistoryContainer')?.scrollTop || 0;
+
   el.innerHTML = `
     <div class="panel-header-sub">
       <div style="display:flex;align-items:center;gap:10px;">
@@ -1082,7 +1117,7 @@ export function renderCandlesticks() {
           ● ROLLING 1H+ TIMEFRAME MEMORY
         </span>
       </div>
-      <div style="max-height:140px;overflow-y:auto;border:1px solid rgba(26,48,96,0.4);border-radius:3px;background:#050a14;">
+      <div id="candlestickHistoryContainer" class="compact-table-scroll" style="max-height:140px;overflow-y:auto;border:1px solid rgba(26,48,96,0.4);border-radius:3px;background:#050a14;">
         <table style="width:100%;border-collapse:collapse;text-align:left;">
           <thead>
             <tr style="background:rgba(15,23,42,0.95);color:var(--muted);font-size:8px;border-bottom:1px solid rgba(26,48,96,0.8);position:sticky;top:0;z-index:2;">
@@ -1102,6 +1137,11 @@ export function renderCandlesticks() {
       </div>
     </div>
   `;
+
+  const newHist = document.getElementById('candlestickHistoryContainer');
+  if (newHist) {
+    newHist.scrollTop = prevHistScroll;
+  }
 }
 
 export function renderTradingAlgos() {
@@ -1941,6 +1981,45 @@ export function renderTrainingAudit() {
     </tr>
   `).join('');
 
+  const statsHtml = `
+    <div class="stat-box">
+      <div class="stat-k">Dataset Span</div>
+      <div class="stat-v" style="color:var(--accent);font-size:13px;">${ds.duration || '6 Months (180 Days)'}</div>
+      <div style="font-size:8px;color:var(--muted);">${ds.hours || '4,320'} Hours Synchronized</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-k">MTF Candles Processed</div>
+      <div class="stat-v" style="color:var(--green);font-size:13px;">${ds.totalCandles || '116,640 Candles'}</div>
+      <div style="font-size:8px;color:var(--muted);">1h, 30m, 15m, 3m</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-k">Ensemble Sharpe Ratio</div>
+      <div class="stat-v" style="color:var(--accent);font-size:13px;">${audit.ensembleSharpe || '2.42'}</div>
+      <div style="font-size:8px;color:var(--muted);">Calmar 3.42 · Max DD -4.8%</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-k">MTF Confluence Win Rate</div>
+      <div class="stat-v" style="color:var(--green);font-size:13px;">${audit.confluenceWinRate || '76.2%'}</div>
+      <div style="font-size:8px;color:var(--muted);">Base Win Rate: ${audit.overallWinRate || '68.5%'}</div>
+    </div>
+  `;
+
+  const existingContainer = document.getElementById('auditTableContainer');
+  const existingTbody = document.getElementById('auditTbody');
+  const existingStats = document.getElementById('auditStatsWrap');
+
+  if (existingContainer && existingTbody && existingStats) {
+    const scrollTop = existingContainer.scrollTop;
+    const scrollLeft = existingContainer.scrollLeft;
+
+    existingStats.innerHTML = statsHtml;
+    existingTbody.innerHTML = algoRows;
+
+    existingContainer.scrollTop = scrollTop;
+    existingContainer.scrollLeft = scrollLeft;
+    return;
+  }
+
   el.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px;">
       <div style="display:flex;align-items:center;gap:8px;">
@@ -1960,27 +2039,8 @@ export function renderTrainingAudit() {
     </div>
 
     <!-- 4-Stat Scorecard -->
-    <div class="stat-grid" style="grid-template-columns:repeat(4, 1fr);gap:6px;margin-bottom:8px;">
-      <div class="stat-box">
-        <div class="stat-k">Dataset Span</div>
-        <div class="stat-v" style="color:var(--accent);font-size:13px;">${ds.duration || '6 Months (180 Days)'}</div>
-        <div style="font-size:8px;color:var(--muted);">${ds.hours || '4,320'} Hours Synchronized</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-k">MTF Candles Processed</div>
-        <div class="stat-v" style="color:var(--green);font-size:13px;">${ds.totalCandles || '116,640 Candles'}</div>
-        <div style="font-size:8px;color:var(--muted);">1h, 30m, 15m, 3m</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-k">Ensemble Sharpe Ratio</div>
-        <div class="stat-v" style="color:var(--accent);font-size:13px;">${audit.ensembleSharpe || '2.42'}</div>
-        <div style="font-size:8px;color:var(--muted);">Calmar 3.42 · Max DD -4.8%</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-k">MTF Confluence Win Rate</div>
-        <div class="stat-v" style="color:var(--green);font-size:13px;">${audit.confluenceWinRate || '76.2%'}</div>
-        <div style="font-size:8px;color:var(--muted);">Base Win Rate: ${audit.overallWinRate || '68.5%'}</div>
-      </div>
+    <div class="stat-grid" id="auditStatsWrap" style="grid-template-columns:repeat(4, 1fr);gap:6px;margin-bottom:8px;">
+      ${statsHtml}
     </div>
 
     <!-- Algorithm Verification Matrix (Scrollable Table with Left/Right Scroll Controls) -->
@@ -2016,7 +2076,7 @@ export function renderTrainingAudit() {
             <th style="padding:4px 6px;">ONLINE LEARNING</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody id="auditTbody">
           ${algoRows}
         </tbody>
       </table>
@@ -2050,7 +2110,7 @@ export function renderAlgoWinRateAndFixPanel() {
   const report = diag.getReport(STATE.price, STATE.signals, STATE.movementPrediction);
   const algos = report.algos || [];
   const best = report.bestAlgo || algos[0];
-  const curPrice = Number(STATE.price) || 2608.50;
+  const curPrice = Number(STATE.price) || (STATE.prices.length > 0 ? STATE.prices[STATE.prices.length - 1] : 0);
 
   // Table rows for all 34 algorithms - compact with autonomous movements
   const algoRows = algos.map((a, i) => {
@@ -2137,40 +2197,7 @@ export function renderAlgoWinRateAndFixPanel() {
   const champUpPct = ((champUpPts / champEntry) * 100).toFixed(2);
   const champDownPct = ((champDownPts / champEntry) * 100).toFixed(2);
 
-  el.innerHTML = `
-    <!-- Header with Action Button & Binance Fee Schedule -->
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px;">
-      <div style="display:flex;align-items:center;gap:8px;">
-        <span style="font-size:20px;filter:drop-shadow(0 0 6px rgba(16,185,129,0.5));">🏆</span>
-        <div>
-          <div style="font-size:12px;font-weight:900;color:var(--text);letter-spacing:0.5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-            ALL 34 RL ALGORITHMS WIN RATE LEADERBOARD & PREDICTION ENGINE
-            <span class="badge" style="background:rgba(16,185,129,0.15);color:var(--green);border:1px solid var(--green);font-size:7.5px;padding:1px 5px;">
-              <span class="radar-dot" style="width:5px;height:5px;margin-right:3px;"></span>34/34 HEALTHY
-            </span>
-            <span class="badge-fee">
-              ⚡ BINANCE PERPS: 0.040% TAKER / 0.020% MAKER
-            </span>
-          </div>
-          <div style="font-size:8.5px;color:var(--muted);margin-top:1px;">
-            Ranked by Win Rate · Autonomous Price Excursion Forecasts for Each Algorithm · Binance Fee Deducted
-          </div>
-        </div>
-      </div>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <button 
-          onclick="window._fixAllAlgos()"
-          style="background:rgba(16,185,129,0.18);border:1.5px solid var(--green);color:var(--green);padding:4px 10px;border-radius:3px;font-size:9px;font-weight:900;letter-spacing:0.4px;cursor:pointer;box-shadow:0 0 10px rgba(16,185,129,0.25);transition:all 0.2s;"
-          onmouseover="this.style.background='var(--green)';this.style.color='#000';"
-          onmouseout="this.style.background='rgba(16,185,129,0.18)';this.style.color='var(--green)';"
-        >
-          ⚡ AUTO-FIX & CALIBRATE ALL 34
-        </button>
-      </div>
-    </div>
-
-    <!-- 🏆 BEST WIN RATE ALGORITHM CHAMPION SHOWCASE (COMPACT & ANIMATED) -->
-    ${best ? `
+  const champHtml = best ? `
     <div class="champion-card-animated" style="background:linear-gradient(135deg, rgba(16,185,129,0.12), rgba(0,212,255,0.08), rgba(15,23,42,0.95));border:1.5px solid var(--green);border-radius:6px;padding:8px 12px;margin-bottom:10px;">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:6px;">
         <div style="display:flex;align-items:center;gap:8px;">
@@ -2254,30 +2281,89 @@ export function renderAlgoWinRateAndFixPanel() {
         </div>
       </div>
     </div>
-    ` : ''}
+  ` : '';
+
+  const statsHtml = `
+    <div class="stat-box" style="border-left:3px solid var(--green);padding:6px 8px;">
+      <div class="stat-k" style="font-size:8px;">Ensemble Average Win Rate</div>
+      <div class="stat-v" style="color:var(--green);font-size:14px;font-weight:900;">${report.avgWinRate}</div>
+      <div style="font-size:7.5px;color:var(--muted);">All 34 Algos Calibrated</div>
+    </div>
+    <div class="stat-box" style="border-left:3px solid #f59e0b;padding:6px 8px;">
+      <div class="stat-k" style="font-size:8px;">Best Algorithm Win Rate</div>
+      <div class="stat-v" style="color:#f59e0b;font-size:14px;font-weight:900;">${best ? best.currentWinRate.toFixed(1) + '%' : '81.5%'}</div>
+      <div style="font-size:7.5px;color:var(--accent);font-weight:700;">${best ? '#' + best.id + ' ' + best.tag : '#34 GTrXL'} (Rank #1)</div>
+    </div>
+    <div class="stat-box" style="border-left:3px solid var(--accent);padding:6px 8px;">
+      <div class="stat-k" style="font-size:8px;">Healthy & Calibrated</div>
+      <div class="stat-v" style="color:var(--accent);font-size:14px;font-weight:900;">${report.healthyCount} / ${report.totalAlgos}</div>
+      <div style="font-size:7.5px;color:var(--green);font-weight:700;">100% Calibrated Target</div>
+    </div>
+    <div class="stat-box" style="border-left:3px solid var(--green);padding:6px 8px;">
+      <div class="stat-k" style="font-size:8px;">Mathematical Patches</div>
+      <div class="stat-v" style="color:var(--green);font-size:14px;font-weight:900;">${report.fixedCount} / ${report.totalAlgos}</div>
+      <div style="font-size:7.5px;color:var(--muted);">Online Dynamic Policies</div>
+    </div>
+  `;
+
+  const existingContainer = document.getElementById('algoWinRateTableContainer');
+  const existingTbody = document.getElementById('algoWinRateTbody');
+  const existingChamp = document.getElementById('algoWinRateChampionWrap');
+  const existingStats = document.getElementById('algoWinRateStatsWrap');
+
+  if (existingContainer && existingTbody && existingChamp && existingStats) {
+    const scrollTop = existingContainer.scrollTop;
+    const scrollLeft = existingContainer.scrollLeft;
+
+    existingChamp.innerHTML = champHtml;
+    existingStats.innerHTML = statsHtml;
+    existingTbody.innerHTML = algoRows;
+
+    existingContainer.scrollTop = scrollTop;
+    existingContainer.scrollLeft = scrollLeft;
+    return;
+  }
+
+  el.innerHTML = `
+    <!-- Header with Action Button & Binance Fee Schedule -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font-size:20px;filter:drop-shadow(0 0 6px rgba(16,185,129,0.5));">🏆</span>
+        <div>
+          <div style="font-size:12px;font-weight:900;color:var(--text);letter-spacing:0.5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+            ALL 34 RL ALGORITHMS WIN RATE LEADERBOARD & PREDICTION ENGINE
+            <span class="badge" style="background:rgba(16,185,129,0.15);color:var(--green);border:1px solid var(--green);font-size:7.5px;padding:1px 5px;">
+              <span class="radar-dot" style="width:5px;height:5px;margin-right:3px;"></span>34/34 HEALTHY
+            </span>
+            <span class="badge-fee">
+              ⚡ BINANCE PERPS: 0.040% TAKER / 0.020% MAKER
+            </span>
+          </div>
+          <div style="font-size:8.5px;color:var(--muted);margin-top:1px;">
+            Ranked by Win Rate · Autonomous Price Excursion Forecasts for Each Algorithm · Binance Fee Deducted
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <button 
+          onclick="window._fixAllAlgos()"
+          style="background:rgba(16,185,129,0.18);border:1.5px solid var(--green);color:var(--green);padding:4px 10px;border-radius:3px;font-size:9px;font-weight:900;letter-spacing:0.4px;cursor:pointer;box-shadow:0 0 10px rgba(16,185,129,0.25);transition:all 0.2s;"
+          onmouseover="this.style.background='var(--green)';this.style.color='#000';"
+          onmouseout="this.style.background='rgba(16,185,129,0.18)';this.style.color='var(--green)';"
+        >
+          ⚡ AUTO-FIX & CALIBRATE ALL 34
+        </button>
+      </div>
+    </div>
+
+    <!-- 🏆 BEST WIN RATE ALGORITHM CHAMPION SHOWCASE (COMPACT & ANIMATED) -->
+    <div id="algoWinRateChampionWrap">
+      ${champHtml}
+    </div>
 
     <!-- 4 Scorecards -->
-    <div class="stat-grid" style="grid-template-columns:repeat(4, 1fr);gap:5px;margin-bottom:8px;">
-      <div class="stat-box" style="border-left:3px solid var(--green);padding:6px 8px;">
-        <div class="stat-k" style="font-size:8px;">Ensemble Average Win Rate</div>
-        <div class="stat-v" style="color:var(--green);font-size:14px;font-weight:900;">${report.avgWinRate}</div>
-        <div style="font-size:7.5px;color:var(--muted);">All 34 Algos Calibrated</div>
-      </div>
-      <div class="stat-box" style="border-left:3px solid #f59e0b;padding:6px 8px;">
-        <div class="stat-k" style="font-size:8px;">Best Algorithm Win Rate</div>
-        <div class="stat-v" style="color:#f59e0b;font-size:14px;font-weight:900;">${best ? best.currentWinRate.toFixed(1) + '%' : '81.5%'}</div>
-        <div style="font-size:7.5px;color:var(--accent);font-weight:700;">${best ? '#' + best.id + ' ' + best.tag : '#34 GTrXL'} (Rank #1)</div>
-      </div>
-      <div class="stat-box" style="border-left:3px solid var(--accent);padding:6px 8px;">
-        <div class="stat-k" style="font-size:8px;">Healthy & Calibrated</div>
-        <div class="stat-v" style="color:var(--accent);font-size:14px;font-weight:900;">${report.healthyCount} / ${report.totalAlgos}</div>
-        <div style="font-size:7.5px;color:var(--green);font-weight:700;">100% Calibrated Target</div>
-      </div>
-      <div class="stat-box" style="border-left:3px solid var(--green);padding:6px 8px;">
-        <div class="stat-k" style="font-size:8px;">Mathematical Patches</div>
-        <div class="stat-v" style="color:var(--green);font-size:14px;font-weight:900;">${report.fixedCount} / ${report.totalAlgos}</div>
-        <div style="font-size:7.5px;color:var(--muted);">Online Dynamic Policies</div>
-      </div>
+    <div class="stat-grid" id="algoWinRateStatsWrap" style="grid-template-columns:repeat(4, 1fr);gap:5px;margin-bottom:8px;">
+      ${statsHtml}
     </div>
 
     <!-- Table Header Controls -->
@@ -2319,7 +2405,7 @@ export function renderAlgoWinRateAndFixPanel() {
             <th style="padding:4px 6px;text-align:right;width:60px;">ACTION</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody id="algoWinRateTbody">
           ${algoRows}
         </tbody>
       </table>
@@ -2376,6 +2462,8 @@ export function renderAutonomousHealingTerminal() {
       </div>`;
 
   const lastRepair = telemetry.lastRepair;
+
+  const prevHealingScroll = document.getElementById('healingStreamLogs')?.scrollTop || 0;
 
   el.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px;">
@@ -2460,7 +2548,7 @@ export function renderAutonomousHealingTerminal() {
     ` : ''}
 
     <!-- Live Auto-Healing Stream -->
-    <div style="border:1px solid rgba(26,48,96,0.6);border-radius:4px;background:rgba(10,15,30,0.85);padding:6px;max-height:220px;overflow-y:auto;">
+    <div id="healingStreamLogs" class="compact-table-scroll" style="border:1px solid rgba(26,48,96,0.6);border-radius:4px;background:rgba(10,15,30,0.85);padding:6px;max-height:220px;overflow-y:auto;">
       <div style="font-size:8px;font-weight:800;color:var(--accent);margin-bottom:4px;display:flex;align-items:center;justify-content:space-between;">
         <span>LIVE AUTONOMOUS HEALING STREAM (${telemetry.recentFixCount} Recent Events)</span>
         <span style="font-size:7px;color:var(--muted);">Continuous Closed-Loop</span>
@@ -2468,6 +2556,11 @@ export function renderAutonomousHealingTerminal() {
       ${logEntries}
     </div>
   `;
+
+  const newHealing = document.getElementById('healingStreamLogs');
+  if (newHealing && prevHealingScroll > 0) {
+    newHealing.scrollTop = prevHealingScroll;
+  }
 }
 
 window._testSimulateErrorAndAutoFix = () => {
@@ -2656,6 +2749,47 @@ export function renderAlgoCapitalBenchmarkPanel() {
     `;
   }).join('');
 
+  const statsHtml = `
+    <div class="stat-box" style="border-left:3px solid var(--accent);padding:6px 8px;">
+      <div class="stat-k" style="font-size:8px;">Total Capital Passed</div>
+      <div class="stat-v" style="color:var(--accent);font-size:14px;font-weight:900;">$${report.totalInitialCapitalUSD}</div>
+      <div style="font-size:7.5px;color:var(--muted);">$10.00 × 34 Algorithms</div>
+    </div>
+    <div class="stat-box" style="border-left:3px solid var(--green);padding:6px 8px;">
+      <div class="stat-k" style="font-size:8px;">Total Current Equity</div>
+      <div class="stat-v" style="color:var(--green);font-size:14px;font-weight:900;">$${report.totalEquityUSD}</div>
+      <div style="font-size:7.5px;color:var(--green);font-weight:700;">Net Gain: +$${report.totalProfitUSD} (${report.totalReturnPct})</div>
+    </div>
+    <div class="stat-box" style="border-left:3px solid #f59e0b;padding:6px 8px;">
+      <div class="stat-k" style="font-size:8px;">Total Binance Fees Deducted</div>
+      <div class="stat-v" style="color:#f59e0b;font-size:14px;font-weight:900;">-$${report.totalBinanceFeesUSD || '0.0000'}</div>
+      <div style="font-size:7.5px;color:var(--muted);">VIP 0: 0.040% Taker / 0.020% Maker</div>
+    </div>
+    <div class="stat-box" style="border-left:3px solid var(--green);padding:6px 8px;">
+      <div class="stat-k" style="font-size:8px;">Aggregate Real Win Rate</div>
+      <div class="stat-v" style="color:var(--green);font-size:14px;font-weight:900;">${report.aggregateWinRate}</div>
+      <div style="font-size:7.5px;color:var(--accent);font-weight:700;">${report.totalWins} Wins / ${report.totalTrades} Trades</div>
+    </div>
+  `;
+
+  const existingContainer = document.getElementById('algoBenchmarkTableContainer');
+  const existingTbody = document.getElementById('algoBenchmarkTbody');
+  const existingPodium = document.getElementById('algoBenchmarkPodiumWrap');
+  const existingStats = document.getElementById('algoBenchmarkStatsWrap');
+
+  if (existingContainer && existingTbody && existingPodium && existingStats) {
+    const scrollTop = existingContainer.scrollTop;
+    const scrollLeft = existingContainer.scrollLeft;
+
+    existingPodium.innerHTML = podiumHtml;
+    existingStats.innerHTML = statsHtml;
+    existingTbody.innerHTML = algoRows;
+
+    existingContainer.scrollTop = scrollTop;
+    existingContainer.scrollLeft = scrollLeft;
+    return;
+  }
+
   el.innerHTML = `
     <!-- Top Header Bar with Action Controls & Binance Fee Tier -->
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:6px;">
@@ -2689,32 +2823,13 @@ export function renderAlgoCapitalBenchmarkPanel() {
     </div>
 
     <!-- Top 3 Efficiency Champions Podium -->
-    <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:6px;margin-bottom:10px;">
+    <div id="algoBenchmarkPodiumWrap" style="display:grid;grid-template-columns:repeat(3, 1fr);gap:6px;margin-bottom:10px;">
       ${podiumHtml}
     </div>
 
     <!-- 4 Portfolio Summary Scorecards (With Binance Fees Displayed) -->
-    <div class="stat-grid" style="grid-template-columns:repeat(4, 1fr);gap:5px;margin-bottom:10px;">
-      <div class="stat-box" style="border-left:3px solid var(--accent);padding:6px 8px;">
-        <div class="stat-k" style="font-size:8px;">Total Capital Passed</div>
-        <div class="stat-v" style="color:var(--accent);font-size:14px;font-weight:900;">$${report.totalInitialCapitalUSD}</div>
-        <div style="font-size:7.5px;color:var(--muted);">$10.00 × 34 Algorithms</div>
-      </div>
-      <div class="stat-box" style="border-left:3px solid var(--green);padding:6px 8px;">
-        <div class="stat-k" style="font-size:8px;">Total Current Equity</div>
-        <div class="stat-v" style="color:var(--green);font-size:14px;font-weight:900;">$${report.totalEquityUSD}</div>
-        <div style="font-size:7.5px;color:var(--green);font-weight:700;">Net Gain: +$${report.totalProfitUSD} (${report.totalReturnPct})</div>
-      </div>
-      <div class="stat-box" style="border-left:3px solid #f59e0b;padding:6px 8px;">
-        <div class="stat-k" style="font-size:8px;">Total Binance Fees Deducted</div>
-        <div class="stat-v" style="color:#f59e0b;font-size:14px;font-weight:900;">-$${report.totalBinanceFeesUSD || '0.0000'}</div>
-        <div style="font-size:7.5px;color:var(--muted);">VIP 0: 0.040% Taker / 0.020% Maker</div>
-      </div>
-      <div class="stat-box" style="border-left:3px solid var(--green);padding:6px 8px;">
-        <div class="stat-k" style="font-size:8px;">Aggregate Real Win Rate</div>
-        <div class="stat-v" style="color:var(--green);font-size:14px;font-weight:900;">${report.aggregateWinRate}</div>
-        <div style="font-size:7.5px;color:var(--accent);font-weight:700;">${report.totalWins} Wins / ${report.totalTrades} Trades</div>
-      </div>
+    <div class="stat-grid" id="algoBenchmarkStatsWrap" style="grid-template-columns:repeat(4, 1fr);gap:5px;margin-bottom:10px;">
+      ${statsHtml}
     </div>
 
     <!-- Full 34-Algorithm $10 Capital Efficiency & Live Execution Table (COMPACT, SLIDE MOVEMENT & HORIZONTAL SCROLL CONTROLS) -->
@@ -2757,7 +2872,7 @@ export function renderAlgoCapitalBenchmarkPanel() {
             <th style="padding:4px 6px;text-align:right;width:55px;">ACTION</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody id="algoBenchmarkTbody">
           ${algoRows}
         </tbody>
       </table>

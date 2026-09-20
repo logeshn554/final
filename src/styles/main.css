@@ -35,6 +35,10 @@
 /* ── Reset ── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+html {
+  scroll-behavior: smooth;
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -567,6 +571,9 @@ canvas { width: 100%; display: block; }
 .scroll {
   overflow-y: auto;
   max-height: 300px;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+  -webkit-overflow-scrolling: touch;
 }
 
 .scroll::-webkit-scrollbar { width: 3px; }
@@ -1500,8 +1507,22 @@ canvas { width: 100%; display: block; }
 .compact-table-scroll {
   overflow-x: auto;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+  -webkit-overflow-scrolling: touch;
   scrollbar-width: thin;
   scrollbar-color: rgba(0, 212, 255, 0.4) rgba(5, 10, 20, 0.8);
+}
+
+/* Scroll Stability & Layout Containment */
+#algoCapitalBenchmarkPanel { min-height: 480px; }
+#algoWinRateFixPanel { min-height: 460px; }
+#trainingAuditPanel { min-height: 260px; }
+#autonomousHealingPanel { min-height: 300px; }
+#algoPanel { min-height: 340px; }
+.algo-grid {
+  overflow-anchor: none;
+  overscroll-behavior: contain;
 }
 
 .compact-table-scroll::-webkit-scrollbar {

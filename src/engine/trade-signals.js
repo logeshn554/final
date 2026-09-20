@@ -47,7 +47,8 @@ export class TradeSignalEngine {
    * @param {Object} state - Current global STATE
    */
   evaluateTradeSetup(state) {
-    const price = state.price || 2608.50;
+    const price = state.price || (state.prices && state.prices.length > 0 ? state.prices[state.prices.length - 1] : 0);
+    if (!price || price <= 0) return null;
 
     // ── CHECK LOCKED TRADE SETUP UNTIL HIT ──
     if (this.lockedTrade) {

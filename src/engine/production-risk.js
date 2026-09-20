@@ -29,8 +29,8 @@ export class ProductionRiskEngine {
       cvar95USD: 0,
       portfolioBeta: 1.15,
       deltaETH: 0,
-      syntheticGamma: 0.04,
-      syntheticVega: 18.5,
+      gammaProxy: 0.04,
+      vegaProxy: 18.5,
       currentDrawdownPct: 0,
       dailyPnLUSD: 0,
       dailyPnLSigma: 0,
@@ -114,10 +114,10 @@ export class ProductionRiskEngine {
     this.metrics.var99USD = Math.round(var99 * 100) / 100;
     this.metrics.cvar95USD = Math.round(cvar95 * 100) / 100;
 
-    // 3. Greeks & Factor Exposures
+    // 3. Risk Proxies & Factor Exposures
     this.metrics.deltaETH = Math.round(position * 1000) / 1000;
-    this.metrics.syntheticGamma = Math.round((Math.abs(position) * 0.012) * 1000) / 1000;
-    this.metrics.syntheticVega = Math.round((notionalUSD * 0.002) * 10) / 10;
+    this.metrics.gammaProxy = Math.round((Math.abs(position) * 0.012) * 1000) / 1000;
+    this.metrics.vegaProxy = Math.round((notionalUSD * 0.002) * 10) / 10;
     this.metrics.portfolioBeta = Math.round((1.15 * (position / (this.maxPositionETH || 1))) * 100) / 100;
 
     // 4. Daily PnL Sigma

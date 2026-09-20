@@ -767,7 +767,7 @@ export class ProductionStrategyEngine {
     this.status = 'SCANNING';
   }
 
-  getFallbackTelemetry(price = 2608.50) {
+  getFallbackTelemetry(price = 0) {
     return {
       strategyName: this.name,
       version: this.version,

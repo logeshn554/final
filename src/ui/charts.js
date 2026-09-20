@@ -5,13 +5,33 @@
 import { STATE } from '../state.js';
 import { fmtPrice, clamp, mean, rnd } from '../utils/math.js';
 
+export function getCanvasDimensions(canvas, defaultW, defaultH) {
+  let W = canvas._cachedW;
+  if (!W) {
+    W = canvas.offsetWidth || defaultW;
+    if (W > 0) canvas._cachedW = W;
+  }
+  if (canvas.width !== W) canvas.width = W;
+  if (canvas.height !== defaultH) canvas.height = defaultH;
+  return { W, H: defaultH };
+}
+
+export function invalidateCanvasSizeCache() {
+  const ids = [
+    'sparkCanvas', 'priceChart', 'ensembleChart', 'worldModelChart',
+    'gaeChart', 'statArbChart', 'acTrajectoryChart', 'attributionChart'
+  ];
+  ids.forEach(id => {
+    const c = document.getElementById(id);
+    if (c) c._cachedW = null;
+  });
+}
+
 /** Draw sparkline */
 export function drawSpark() {
   const canvas = document.getElementById('sparkCanvas');
   if (!canvas) return;
-  const W = canvas.offsetWidth || 200;
-  const H = 40;
-  canvas.width = W; canvas.height = H;
+  const { W, H } = getCanvasDimensions(canvas, 200, 40);
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, W, H);
 
@@ -45,9 +65,7 @@ export function drawSpark() {
 export function drawPriceChart() {
   const canvas = document.getElementById('priceChart');
   if (!canvas) return;
-  const W = canvas.offsetWidth || 500;
-  const H = 240;
-  canvas.width = W; canvas.height = H;
+  const { W, H } = getCanvasDimensions(canvas, 500, 240);
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, W, H);
 
@@ -422,9 +440,7 @@ export function drawPriceChart() {
 export function drawEnsembleChart() {
   const canvas = document.getElementById('ensembleChart');
   if (!canvas) return;
-  const W = canvas.offsetWidth || 200;
-  const H = 70;
-  canvas.width = W; canvas.height = H;
+  const { W, H } = getCanvasDimensions(canvas, 200, 70);
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, W, H);
 
@@ -468,9 +484,7 @@ export function drawEnsembleChart() {
 export function drawWorldModel() {
   const canvas = document.getElementById('worldModelChart');
   if (!canvas) return;
-  const W = canvas.offsetWidth || 180;
-  const H = 80;
-  canvas.width = W; canvas.height = H;
+  const { W, H } = getCanvasDimensions(canvas, 180, 80);
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, W, H);
 
@@ -517,9 +531,7 @@ export function drawWorldModel() {
 export function drawGAEChart() {
   const canvas = document.getElementById('gaeChart');
   if (!canvas) return;
-  const W = canvas.offsetWidth || 180;
-  const H = 60;
-  canvas.width = W; canvas.height = H;
+  const { W, H } = getCanvasDimensions(canvas, 180, 60);
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, W, H);
 
@@ -549,9 +561,7 @@ export function drawGAEChart() {
 export function drawStatArbChart() {
   const canvas = document.getElementById('statArbChart');
   if (!canvas) return;
-  const W = canvas.offsetWidth || 220;
-  const H = 75;
-  canvas.width = W; canvas.height = H;
+  const { W, H } = getCanvasDimensions(canvas, 220, 75);
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, W, H);
 
@@ -608,9 +618,7 @@ export function drawStatArbChart() {
 export function drawExecutionTrajectoryChart() {
   const canvas = document.getElementById('acTrajectoryChart');
   if (!canvas) return;
-  const W = canvas.offsetWidth || 220;
-  const H = 75;
-  canvas.width = W; canvas.height = H;
+  const { W, H } = getCanvasDimensions(canvas, 220, 75);
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, W, H);
 
@@ -654,9 +662,7 @@ export function drawExecutionTrajectoryChart() {
 export function drawAttributionChart() {
   const canvas = document.getElementById('attributionChart');
   if (!canvas) return;
-  const W = canvas.offsetWidth || 220;
-  const H = 45;
-  canvas.width = W; canvas.height = H;
+  const { W, H } = getCanvasDimensions(canvas, 220, 45);
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, W, H);
 
