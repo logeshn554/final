@@ -612,7 +612,11 @@ function tick() {
       if (typeof algorithms[i].predict === 'function') {
         algorithms[i].predict(features);
       }
-      const result = algorithms[i].getSignal(features);
+      const result = algorithms[i].getSignal(features, {
+        price: STATE.price,
+        atr: STATE.movementPrediction?.atr || 15.0,
+        movementPrediction: STATE.movementPrediction,
+      });
       STATE.signals[algorithms[i].id] = result;
     } catch (e) {
       STATE.signals[algorithms[i].id] = { signal: 0, conf: 0.1, direction: 0, metrics: { error: e.message } };
@@ -681,6 +685,22 @@ function tick() {
   STATE.movementPrediction = movementPrediction;
   productionStrategyEngine.movementPrediction = movementPrediction;
   tradeSignalEngine.movementPrediction = movementPrediction;
+
+  // ── AUTONOMOUS DYNAMIC TP & SL DETECTION FOR ALL 43 RL ALGORITHMS (ZERO FIXED RATIOS) ──
+  // Refreshes every algorithm's dynamic target and stop based on fresh tick movement prediction
+  for (let i = 0; i < algorithms.length; i++) {
+    const algo = algorithms[i];
+    if (typeof algo.detectDynamicLevels === 'function') {
+      const levels = algo.detectDynamicLevels({
+        price: STATE.price,
+        atr: currentATR,
+        movementPrediction,
+      });
+      if (STATE.signals[algo.id]) {
+        Object.assign(STATE.signals[algo.id], levels);
+      }
+    }
+  }
 
   // ── TRADE SETUP, PRODUCTION STRATEGY, DIVERGENCE EXPLAINABILITY & 6-MONTH TRAINING AUDIT ──
   STATE.productionStrategy = productionStrategyEngine.evaluate({

@@ -59,6 +59,11 @@ export class IQLAlgo extends BaseAlgorithm {
     return { signal: this.signal, confidence: this.confidence, action };
   }
 
+  getPolicyAdvantage() {
+    const adv = Math.max(Math.abs(this.metrics.advantageBuy || 0), Math.abs(this.metrics.advantageSell || 0));
+    return clamp(adv * 0.8 + this.confidence * 0.5, 0.2, 1.7);
+  }
+
   update(features, reward, done) {
     if (!this.lastFeatures) {
       this.lastFeatures = features;
@@ -137,6 +142,11 @@ export class GenuineCQLAlgo extends BaseAlgorithm {
     };
 
     return { signal: this.signal, confidence: this.confidence, action };
+  }
+
+  getPolicyAdvantage() {
+    const cons = Math.abs(this.metrics.qConservativeMean || 0);
+    return clamp(cons * 0.75 + this.confidence * 0.55, 0.2, 1.6);
   }
 
   update(features, reward, done) {
@@ -230,6 +240,12 @@ export class DecisionTransformerAlgo extends BaseAlgorithm {
     };
 
     return { signal: this.signal, confidence: this.confidence, action };
+  }
+
+  getPolicyAdvantage() {
+    // Conditioned return-to-go token scales target excursion horizon
+    const rtgFactor = Math.min(2.0, (this.targetRTG || 2.0) / 2.0);
+    return clamp(rtgFactor * 0.7 + this.confidence * 0.5, 0.3, 1.8);
   }
 
   update(features, reward, done) {
@@ -333,7 +349,12 @@ export class TDMPC2Algo extends BaseAlgorithm {
       latentZNorm: Math.round(Math.hypot(...z0) * 100) / 100,
     };
 
-    return { signal: this.signal, confidence: this.confidence, action: bestAction };
+    return { signal: this.signal, confidence: this.confidence, action };
+  }
+
+  getPolicyAdvantage() {
+    const trajScore = Math.abs(this.metrics.expectedTrajectoryReturn || 0.5);
+    return clamp(trajScore * 0.75 + this.confidence * 0.5, 0.25, 1.7);
   }
 
   update(features, reward, done) {

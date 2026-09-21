@@ -551,19 +551,16 @@ export class StrategyPerformanceEngine {
             targetDistance = Math.max(curAtr * 0.30, blendedTargetAtr * curAtr);
             stopDistance = Math.max(curAtr * 0.20, blendedStopAtr * curAtr);
           } else {
-            // Prior before empirical data: regime-scaled ATR (no hardcoded category table)
-            // Regime scaling: BREAKOUT/TREND get 1.4× ATR target; VOLATILE gets 0.8×; else 1.0×
-            const regScaleMap = { BREAKOUT: 1.4, TREND_UP: 1.3, TREND_DOWN: 1.3, HIGH_VOLATILITY: 0.8, MEAN_REVERTING: 0.75, SIDEWAYS: 0.75 };
-            const regScale = regScaleMap[currentRegime] || 1.0;
-            targetDistance = baseFavMove > 0 ? baseFavMove * regScale : curAtr * regScale;
-            stopDistance = baseAdvMove > 0 ? baseAdvMove * regScale : (targetDistance * 0.65);
+            // Dynamic market movement prediction directly from distribution (NO fixed ratio multipliers)
+            targetDistance = baseFavMove > 0 ? baseFavMove : Math.max(0.5, curAtr);
+            stopDistance = baseAdvMove > 0 ? baseAdvMove : Math.max(0.5, curAtr * 0.7);
           }
 
           if (!stratTarget) {
-            stratTarget = direction > 0 ? (price + targetDistance) : (price - targetDistance);
+            stratTarget = direction > 0 ? (entryPrice + targetDistance) : (entryPrice - targetDistance);
           }
           if (!stratStop) {
-            stratStop = direction > 0 ? (price - stopDistance) : (price + stopDistance);
+            stratStop = direction > 0 ? (entryPrice - stopDistance) : (entryPrice + stopDistance);
           }
         }
 

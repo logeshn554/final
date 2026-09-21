@@ -134,10 +134,22 @@ export class AlgoCapitalBenchmarkEngine {
         const t = acc.activeTrade;
         t.ticksHeld = (t.ticksHeld || 0) + 1;
 
-        // Upgrade legacy trades to autonomous dynamic profile if needed
-        if (!t.tpDistance || t.tpPct === 0.20) {
+        // Dynamic trailing stop ratcheting on active paper trade (ratchets stop as trade moves towards TP)
+        const favorableDelta = t.isBuy ? (currentPrice - t.entryPrice) : (t.entryPrice - currentPrice);
+        if (t.tpDistance > 0 && favorableDelta > t.tpDistance * 0.40) {
+          const lockedGain = favorableDelta * 0.35;
+          const trailingStop = t.isBuy ? +(t.entryPrice + lockedGain).toFixed(2) : +(t.entryPrice - lockedGain).toFixed(2);
+          if (t.isBuy && trailingStop > t.slPrice) {
+            t.slPrice = trailingStop;
+          } else if (!t.isBuy && trailingStop < t.slPrice) {
+            t.slPrice = trailingStop;
+          }
+        }
+
+        // Ensure active trade has autonomous dynamic excursion levels (ZERO fixed ratios)
+        if (!t.tpDistance) {
           const profile = ALGO_PROFILES[acc.id] || ALGO_PROFILES[1];
-          const { up, down } = profile.calc(t.entryPrice, atr, s, sig.conf || 0.5, sig.metrics || {});
+          const { up, down } = profile.calc(t.entryPrice, atr, s, sig.conf || 0.5, sig.metrics || {}, movementPrediction);
           t.tpDistance = up;
           t.slDistance = down;
           t.tpPrice = +(t.isBuy ? t.entryPrice + up : t.entryPrice - up).toFixed(2);
@@ -248,25 +260,31 @@ export class AlgoCapitalBenchmarkEngine {
         const sizeETH = +(10.00 / entryPrice).toFixed(6); // $10.00 worth of ETH
 
         // ═══════════════════════════════════════════════════════
-        // AUTONOMOUS PER-ALGORITHM PREDICTED MOVEMENT
-        // Every algorithm decides ON ITS OWN how much price can move UP or DOWN!
-        // NO fixed percentage. No shared TP or SL.
+        // AUTONOMOUS PER-ALGORITHM AUTOMATIC TP & SL DETECTION
+        // Prioritizes algorithm's own dynamic detection — ZERO FIXED RATIOS
         // ═══════════════════════════════════════════════════════
-        const profile = ALGO_PROFILES[acc.id] || ALGO_PROFILES[1];
-        const { up, down } = profile.calc(currentPrice, atr, s, sig.conf || 0.5, sig.metrics || {});
-        
-        const tpDistance = up;
-        const slDistance = down;
-
+        let tpDistance = 0;
+        let slDistance = 0;
         let tpPrice = 0;
         let slPrice = 0;
+        const profile = ALGO_PROFILES[acc.id] || ALGO_PROFILES[1];
 
-        if (isBuy) {
-          tpPrice = +(entryPrice + tpDistance).toFixed(2);
-          slPrice = +(entryPrice - slDistance).toFixed(2);
+        if (sig.tpPrice && sig.slPrice && sig.tpDistance > 0 && sig.slDistance > 0) {
+          tpDistance = sig.tpDistance;
+          slDistance = sig.slDistance;
+          tpPrice = sig.tpPrice;
+          slPrice = sig.slPrice;
         } else {
-          tpPrice = +(entryPrice - tpDistance).toFixed(2);
-          slPrice = +(entryPrice + slDistance).toFixed(2);
+          const { up, down } = profile.calc(currentPrice, atr, s, sig.conf || 0.5, sig.metrics || {}, movementPrediction);
+          tpDistance = up;
+          slDistance = down;
+          if (isBuy) {
+            tpPrice = +(entryPrice + tpDistance).toFixed(2);
+            slPrice = +(entryPrice - slDistance).toFixed(2);
+          } else {
+            tpPrice = +(entryPrice - tpDistance).toFixed(2);
+            slPrice = +(entryPrice + slDistance).toFixed(2);
+          }
         }
 
         const tpPct = +((tpDistance / entryPrice) * 100).toFixed(2);

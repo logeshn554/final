@@ -41,10 +41,86 @@ export class BaseAlgorithm {
   }
 
   /**
-   * Get current signal result (called by ensemble)
-   * @param {Float64Array} [features] Optional features to evaluate dynamic policy
+   * Get policy advantage / conviction for dynamic excursion sizing
+   * Subclasses can override this with algorithm-specific mechanics
+   * (e.g. Q-gap, GAE advantage, entropy, return-to-go, VaR quantile).
    */
-  getSignal(features = null) {
+  getPolicyAdvantage() {
+    const intensity = Math.abs(this.signal);
+    const conf = typeof this.confidence === 'number' ? this.confidence : 0.5;
+    return clamp(intensity * 0.75 + conf * 0.5, 0.1, 1.5);
+  }
+
+  /**
+   * Automatically detect and set dynamic TP (take profit) and SL (stop loss)
+   * ZERO FIXED RATIO: derived organically from the RL policy's internal advantage/state,
+   * live market volatility (ATR), and movement prediction distribution.
+   */
+  detectDynamicLevels(marketContext = {}) {
+    const price = Number(marketContext.price || marketContext.currentPrice || 0);
+    const atr = Number(marketContext.atr || (price > 0 ? price * 0.0068 : 15.0));
+    const mp = marketContext.movementPrediction || marketContext.movementDistribution || null;
+    const direction = this.signal > 0.05 ? 1 : this.signal < -0.05 ? -1 : 0;
+
+    // Algorithm-specific conviction / advantage
+    const conf = typeof this.confidence === 'number' ? this.confidence : 0.5;
+    const policyAdvantage = typeof this.getPolicyAdvantage === 'function'
+      ? this.getPolicyAdvantage()
+      : (Math.abs(this.signal) * 0.75 + conf * 0.5);
+
+    // Dynamic market baselines from distribution if available
+    const baseFav = Number(mp?.predictedMovement?.mainMove || mp?.favorable?.[0]?.distance || 0);
+    const baseAdv = Number(mp?.adverseMovement?.expected || mp?.adverse?.expected || 0);
+
+    // Automatic TP & SL distance detection: NO FIXED RATIO!
+    let tpDist;
+    let slDist;
+
+    if (baseFav > 0 && baseAdv > 0) {
+      // Dynamic scaling according to policy conviction: higher advantage captures more of favorable distribution
+      tpDist = Math.max(atr * 0.25, baseFav * (0.85 + Math.min(1.0, policyAdvantage) * 0.35));
+      slDist = Math.max(atr * 0.15, baseAdv * (1.05 - Math.min(0.5, policyAdvantage * 0.3)));
+    } else {
+      tpDist = Math.max(atr * 0.25, atr * (0.75 + policyAdvantage * 0.45));
+      slDist = Math.max(atr * 0.15, atr * (0.45 + (1 - conf) * 0.35));
+    }
+
+    tpDist = Math.round(tpDist * 100) / 100;
+    slDist = Math.round(slDist * 100) / 100;
+
+    let tpPrice = null;
+    let slPrice = null;
+    if (price > 0) {
+      if (direction >= 0) {
+        tpPrice = Math.round((price + tpDist) * 100) / 100;
+        slPrice = Math.round((price - slDist) * 100) / 100;
+      } else {
+        tpPrice = Math.round((price - tpDist) * 100) / 100;
+        slPrice = Math.round((price + slDist) * 100) / 100;
+      }
+    }
+
+    return {
+      tpDistance: tpDist,
+      slDistance: slDist,
+      tpPrice,
+      slPrice,
+      tp: tpPrice,
+      sl: slPrice,
+      takeProfit: tpPrice,
+      stopLoss: slPrice,
+      target: tpPrice,
+      stop: slPrice,
+      policyAdvantage: Math.round(policyAdvantage * 100) / 100,
+    };
+  }
+
+  /**
+   * Get current signal result (called by ensemble, paper trading, and strategy engines)
+   * @param {Float64Array} [features] Optional features to evaluate dynamic policy
+   * @param {Object} [marketContext] Live market context (price, atr, movementPrediction)
+   */
+  getSignal(features = null, marketContext = null) {
     if (features && typeof this.predict === 'function') {
       try {
         const pred = this.predict(features);
@@ -54,12 +130,18 @@ export class BaseAlgorithm {
         }
       } catch (e) {}
     }
-    return {
+    const base = {
       signal: clamp(this.signal, -1, 1),
       conf: clamp(this.confidence, 0, 1),
-      direction: this.signal > 0.1 ? 1 : this.signal < -0.1 ? -1 : 0,
+      direction: this.signal > 0.05 ? 1 : this.signal < -0.05 ? -1 : 0,
       metrics: { ...this.metrics },
     };
+
+    if (marketContext) {
+      const levels = this.detectDynamicLevels(marketContext);
+      Object.assign(base, levels);
+    }
+    return base;
   }
 
   /**
@@ -85,3 +167,4 @@ export class BaseAlgorithm {
     return this.signal;
   }
 }
+

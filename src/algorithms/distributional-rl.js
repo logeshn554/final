@@ -80,6 +80,11 @@ export class QRDQNAlgo extends BaseAlgorithm {
     return { signal: this.signal, confidence: this.confidence, action: bestAction };
   }
 
+  getPolicyAdvantage() {
+    const qDiff = Math.abs((this.metrics.qBuyMean || 0) - (this.metrics.qSellMean || 0));
+    return clamp(qDiff * 0.8 + this.confidence * 0.5, 0.2, 1.8);
+  }
+
   update(features, reward, done) {
     if (!this.lastFeatures) {
       this.lastFeatures = features;
@@ -193,6 +198,11 @@ export class IQNAlgo extends BaseAlgorithm {
     return { signal: this.signal, confidence: this.confidence, action };
   }
 
+  getPolicyAdvantage() {
+    const riskSpread = Math.abs(this.metrics.quantileRiskSpread || 0);
+    return clamp(riskSpread * 0.75 + this.confidence * 0.5, 0.2, 1.8);
+  }
+
   update(features, reward, done) {
     // Online temporal-difference update for sampled quantiles
     this.lastFeatures = features;
@@ -224,6 +234,10 @@ export class FQFAlgo extends BaseAlgorithm {
       qMean: res.signal,
     };
     return res;
+  }
+
+  getPolicyAdvantage() {
+    return this.iqnHead.getPolicyAdvantage();
   }
 
   update(features, reward, done) {

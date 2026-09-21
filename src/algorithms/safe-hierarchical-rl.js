@@ -81,6 +81,12 @@ export class CPOLagrangianAlgo extends BaseAlgorithm {
     this.lastReward = reward;
     this.trainSteps++;
   }
+
+  getPolicyAdvantage() {
+    // When safety constraint is active (lambda higher), adaptively modulate risk boundary
+    const safeFactor = Math.max(0.2, 1.0 - (this.lambdaLagrangian * 0.15));
+    return clamp((Math.abs(this.signal) * 0.8 + this.confidence * 0.5) * safeFactor, 0.2, 1.5);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -156,6 +162,12 @@ export class OptionCriticHierarchicalAlgo extends BaseAlgorithm {
     };
 
     return { signal: this.signal, confidence: this.confidence, action };
+  }
+
+  getPolicyAdvantage() {
+    // Option continuation probability (1 - beta) scales dynamic holding conviction
+    const continuation = 1.0 - (this.metrics.terminationProb || 0.3);
+    return clamp(continuation * 0.8 + this.confidence * 0.5, 0.3, 1.6);
   }
 
   update(features, reward, done) {

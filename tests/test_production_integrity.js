@@ -22,6 +22,11 @@ function assert(condition, message) {
   }
 }
 
+function assertClose(actual, expected, tol = 0.05, message = '') {
+  const diff = Math.abs(actual - expected);
+  assert(diff <= tol, `${message} (actual: ${actual}, expected: ${expected})`);
+}
+
 console.log('─────────────────────────────────────────────────────────────────');
 console.log('🧪 PRODUCTION INTEGRITY & ARCHITECTURAL VERIFICATION');
 console.log('─────────────────────────────────────────────────────────────────');
@@ -262,6 +267,88 @@ console.log('\n[10] TEST: Attribution Engine Empirical Beta (No 0.35 Fixed Coeff
   assert(isFinite(feedback._betaEstimate), 'Empirical beta is finite');
   assert(feedback.modelDrift.driftIndex >= 0 && feedback.modelDrift.driftIndex <= 1,
     `Drift index in [0,1] range: ${feedback.modelDrift.driftIndex}`);
+}
+
+// [11] Autonomous Dynamic TP & SL Detection for all 43 RL Algorithms (Zero Fixed Ratios)
+console.log('\n[11] TEST: All 43 RL Algorithms Autonomous Dynamic TP & SL Detection (Paper Trading)');
+{
+  const { createAlgorithms } = await import('../src/algorithms/index.js');
+  const { StrategyPerformanceEngine } = await import('../src/engine/strategy-performance-engine.js');
+  const { AlgoCapitalBenchmarkEngine } = await import('../src/engine/algo-capital-benchmark.js');
+
+  const algos = createAlgorithms();
+  assert(algos.length === 43, `All 43 RL algorithms loaded (found: ${algos.length})`);
+
+  const mockFeatures = new Float64Array(20).fill(0.05);
+  const mockContext = {
+    price: 2500.0,
+    atr: 16.0,
+    movementPrediction: {
+      predictedMovement: { mainMove: 22.0 },
+      adverseMovement: { expected: 11.0 },
+    },
+  };
+
+  const detectedDistances = new Set();
+  let allEmittedLevels = true;
+  let allCorrectDirection = true;
+
+  for (const algo of algos) {
+    algo.signal = (algo.id % 2 === 0) ? 0.75 : -0.75;
+    algo.confidence = 0.80;
+    const sig = algo.getSignal(mockFeatures, mockContext);
+
+    if (!sig.tpPrice || !sig.slPrice || !sig.tpDistance || !sig.slDistance) {
+      allEmittedLevels = false;
+    }
+
+    detectedDistances.add(sig.tpDistance);
+
+    if (sig.direction > 0) {
+      if (sig.tpPrice <= 2500.0 || sig.slPrice >= 2500.0) allCorrectDirection = false;
+    } else if (sig.direction < 0) {
+      if (sig.tpPrice >= 2500.0 || sig.slPrice <= 2500.0) allCorrectDirection = false;
+    }
+  }
+
+  assert(allEmittedLevels, 'All 43 RL algorithms automatically emit dynamic TP & SL levels');
+  assert(allCorrectDirection, 'All 43 RL algorithms set TP in favorable direction and SL in adverse direction');
+  assert(detectedDistances.size > 1, `TP distances vary dynamically based on algorithm mechanics (found ${detectedDistances.size} distinct distances, NO fixed ratio)`);
+
+  // Verify StrategyPerformanceEngine uses algorithm's automatically detected TP & SL
+  const perfEngine = new StrategyPerformanceEngine(2500.0);
+  const testAlgo = algos[17]; // PPO (algo 18)
+  testAlgo.signal = 0.85;
+  testAlgo.confidence = 0.90;
+  const ppoSignal = testAlgo.getSignal(mockFeatures, mockContext);
+
+  perfEngine.ingestSignals({
+    signals: {
+      'rl_ppo': ppoSignal,
+    },
+    currentPrice: 2500.0,
+    atr: 16.0,
+    movementPrediction: mockContext.movementPrediction,
+  });
+
+  const ppoTrade = perfEngine.openTrades['rl_ppo'];
+  assert(ppoTrade !== undefined, 'rl_ppo paper trade opened in StrategyPerformanceEngine');
+  assertClose(ppoTrade.predictedTarget, ppoSignal.tpPrice, 0.05, 'Paper trade target matches algorithm self-detected dynamic TP');
+  assertClose(ppoTrade.predictedStop, ppoSignal.slPrice, 0.05, 'Paper trade stop matches algorithm self-detected dynamic SL');
+
+  // Verify AlgoCapitalBenchmarkEngine uses algorithm's automatically detected TP & SL
+  const benchmark = new AlgoCapitalBenchmarkEngine(2500.0);
+  const signalsMap = {};
+  for (const a of algos) {
+    signalsMap[a.id] = a.getSignal(mockFeatures, mockContext);
+  }
+  benchmark.tick(2500.0, signalsMap, mockContext.movementPrediction);
+
+  const acc18 = benchmark.algoAccounts[18];
+  assert(acc18 && acc18.activeTrade !== null, 'Algo 18 opened paper trade in $10 capital arena');
+  assert(acc18.activeTrade.tpPrice > 0, 'Arena paper trade has dynamic TP price');
+  assert(acc18.activeTrade.slPrice > 0, 'Arena paper trade has dynamic SL price');
+  assert(acc18.activeTrade.tpPct !== 0.20, 'Arena paper trade does NOT use legacy fixed 0.20% ratio');
 }
 
 console.log('─────────────────────────────────────────────────────────────────');
