@@ -225,9 +225,14 @@ export class MastermindEngine {
         ? perfWeights[id]
         : (perfWeights[stratKey] !== undefined ? perfWeights[stratKey] : defaultWeight);
 
-      // Strategy regime affinity multiplier
+      // Strategy regime affinity multiplier — reads from empirical paper-trading data per strategy per regime.
+      // stratPerf.strategies is populated by StrategyPerformanceEngine.getState() with per-regime affinityScore.
       const stratMeta = stratPerf?.strategies?.[id] || stratPerf?.strategies?.[stratKey];
-      const regimeAffinity = stratMeta?.regimeScore || stratMeta?.regimePerformance?.[currentRegime]?.affinityScore || 1.0;
+      // regimeScore is the affinityScore for the CURRENT regime from observed paper trades (0.05–0.95)
+      // Falls back to 1.0 only when no trades exist yet (neutral prior = full weight)
+      const regimeAffinity = (stratMeta?.regimeScore !== undefined && stratMeta.regimeScore > 0)
+        ? stratMeta.regimeScore
+        : 1.0;
 
       // Granular strategy dynamic weight: w_i * c_i * r_i
       const strategyDynamicWeight = Math.max(0.001, empiricalW * Math.max(0.15, conf) * Math.max(0.2, regimeAffinity));
@@ -631,9 +636,14 @@ export class MastermindEngine {
     } else if (isToxic) {
       manualApproved = false;
       manualReason = `MANUAL TRADE REJECTED: Toxic informed flow VPIN ${(vpin * 100).toFixed(1)}% > 45%.`;
+    } else if (baseDecision.confidence < 0.40) {
+      // Manual trades are permitted with a relaxed threshold (0.40 vs 0.54 algorithmic)
+      // to allow deliberate human judgment, but still block genuinely unsafe market states.
+      manualApproved = false;
+      manualReason = `MANUAL TRADE DECLINED: Market confidence ${(baseDecision.confidence * 100).toFixed(1)}% is below the 40% manual safety floor. Market conditions too uncertain for any trade.`;
     } else {
       manualApproved = true;
-      manualReason = `MANUAL TRADE APPROVED: Discretionary ${direction > 0 ? 'BUY' : 'SELL'} authorized under MasterMind risk envelope.`;
+      manualReason = `MANUAL TRADE APPROVED: Discretionary ${direction > 0 ? 'BUY' : 'SELL'} authorized under MasterMind risk envelope (Conf: ${(baseDecision.confidence * 100).toFixed(1)}%).`;
     }
 
     return {

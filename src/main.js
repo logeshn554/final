@@ -293,33 +293,43 @@ window._manualExecuteTrade = (direction = 1) => {
   STATE.masterDecision = manualDecision;
 
   if (manualDecision.approved && STATE.masterTrade) {
-    STATE.masterTrade.status = 'ACTIVE';
-    STATE.masterTrade.direction = direction;
-    STATE.masterTrade.action = direction === 1 ? 'BUY' : 'SELL';
-    STATE.masterTrade.entryPrice = STATE.price;
-    STATE.masterTrade.tpPrice = manualDecision.execution?.takeProfitPrice || (direction === 1 ? STATE.price + 25 : STATE.price - 25);
-    STATE.masterTrade.spPrice = manualDecision.execution?.stopPrice || (direction === 1 ? STATE.price - 18 : STATE.price + 18);
-    STATE.masterTrade.tpDistance = Math.abs(STATE.masterTrade.tpPrice - STATE.price);
-    STATE.masterTrade.slDistance = Math.abs(STATE.masterTrade.spPrice - STATE.price);
-    STATE.masterTrade.positionETH = manualDecision.risk?.positionSizeETH || 1.0;
-    STATE.masterTrade.positionUSD = (STATE.masterTrade.positionETH * STATE.price).toFixed(2);
-    const now = Date.now();
-    const timeStr = new Date(now).toLocaleTimeString();
-    const dateStr = new Date(now).toISOString().slice(0, 10);
-    STATE.masterTrade.entryTime = now;
-    STATE.masterTrade.entryTimeStr = timeStr;
-    STATE.masterTrade.entryDateStr = dateStr;
-    STATE.masterTrade.boughtTime = direction === 1 ? timeStr : null;
-    STATE.masterTrade.soldTime = direction === 1 ? null : timeStr;
-    STATE.masterTrade.boughtDate = direction === 1 ? dateStr : null;
-    STATE.masterTrade.soldDate = direction === 1 ? null : dateStr;
-    STATE.masterTrade.elapsedSec = 0;
-    STATE.masterTrade.elapsedStr = '0s';
-    STATE.masterTrade.livePnlUSD = '0.00';
-    STATE.masterTrade.livePnlPct = 0;
-    STATE.masterTrade.progressPct = 0;
-    STATE.masterTrade.triggerType = `MANUAL ${direction === 1 ? 'BUY' : 'SELL'} (MasterMind Authorized)`;
-    STATE.masterTrade.scanReason = null;
+    // Activate trade only if MasterMind approved AND execution levels are market-derived (not fixed numbers)
+    const tpPrice = manualDecision.execution?.takeProfitPrice;
+    const spPrice = manualDecision.execution?.stopPrice;
+    if (!tpPrice || !spPrice) {
+      log(`MANUAL TRADE: MasterMind approved but no valid market-derived TP/SL produced — trade not activated`, 'warn');
+    } else if (STATE.masterTrade.status === 'IDLE' || STATE.masterTrade.status === 'SCANNING' || STATE.masterTrade.status === 'RISK_BLOCKED') {
+      STATE.masterTrade.status = 'ACTIVE';
+      STATE.masterTrade.direction = direction;
+      STATE.masterTrade.action = direction === 1 ? 'BUY' : 'SELL';
+      STATE.masterTrade.entryPrice = STATE.price;
+      STATE.masterTrade.tpPrice = tpPrice;
+      STATE.masterTrade.spPrice = spPrice;
+      STATE.masterTrade.tpDistance = Math.abs(tpPrice - STATE.price);
+      STATE.masterTrade.slDistance = Math.abs(spPrice - STATE.price);
+      STATE.masterTrade.positionETH = manualDecision.risk?.positionSizeETH || 1.0;
+      STATE.masterTrade.positionUSD = (STATE.masterTrade.positionETH * STATE.price).toFixed(2);
+      const now = Date.now();
+      const timeStr = new Date(now).toLocaleTimeString();
+      const dateStr = new Date(now).toISOString().slice(0, 10);
+      STATE.masterTrade.entryTime = now;
+      STATE.masterTrade.entryTimeStr = timeStr;
+      STATE.masterTrade.entryDateStr = dateStr;
+      STATE.masterTrade.boughtTime = direction === 1 ? timeStr : null;
+      STATE.masterTrade.soldTime = direction === 1 ? null : timeStr;
+      STATE.masterTrade.boughtDate = direction === 1 ? dateStr : null;
+      STATE.masterTrade.soldDate = direction === 1 ? null : dateStr;
+      STATE.masterTrade.elapsedSec = 0;
+      STATE.masterTrade.elapsedStr = '0s';
+      STATE.masterTrade.livePnlUSD = '0.00';
+      STATE.masterTrade.livePnlPct = 0;
+      STATE.masterTrade.progressPct = 0;
+      STATE.masterTrade.triggerType = `MANUAL ${direction === 1 ? 'BUY' : 'SELL'} (MasterMind Authorized)`;
+      STATE.masterTrade.scanReason = null;
+    }
+  } else if (STATE.masterTrade) {
+    STATE.masterTrade.action = 'SCANNING';
+    STATE.masterTrade.scanReason = manualDecision.reason;
   }
 
   renderHeaderMasterSignalArea();
@@ -394,12 +404,28 @@ export function evaluateDataQualityGate() {
     derivativesFresh: STATE.layer1?.quantFeeds?.fundingRate !== null,
   };
 
-  // Rigorous Gate: Must have live price, recent price tick, depth, and at least 5 historical prices
-  const isReady = (STATE.price !== null && STATE.price > 0 && STATE.prices.length >= 5 && STATE.connection.status !== 'offline');
+  // Rigorous Gate: Must have a live fresh price AND (fresh order book depth OR at least 5 kline prices)
+  // The depth check is waived only during the first 30 ticks (startup warm-up) so the system
+  // is not permanently stalled if the order book WebSocket is slightly delayed on connect.
+  const startupGrace = STATE.tick < 30;
+  const hasDepthOrKlines = depthFresh || klinesFresh;
+  const isReady = priceFresh && (startupGrace || hasDepthOrKlines) && STATE.connection.status !== 'offline';
+
+  // Gate label is explicit about what data is backing the decision
+  let gateStatus;
+  if (!isReady) {
+    gateStatus = 'GATE_LOCKED (AWAITING VERIFIED DATA)';
+  } else if (priceFresh && depthFresh) {
+    gateStatus = 'GATE_OPEN (LIVE PRICE + ORDER BOOK)';
+  } else if (priceFresh && klinesFresh) {
+    gateStatus = 'GATE_OPEN (LIVE PRICE + KLINES — DEPTH STALE)';
+  } else {
+    gateStatus = 'GATE_OPEN (STARTUP WARM-UP)';
+  }
 
   STATE.dataQualityGate = {
     isReady,
-    status: isReady ? 'GATE_OPEN (VERIFIED REAL DATA)' : 'GATE_LOCKED (AWAITING VERIFIED DATA)',
+    status: gateStatus,
     checks,
     lastCheckTime: now,
   };
@@ -806,35 +832,7 @@ function tick() {
   });
   STATE.masterDecision = masterDecision;
 
-  // Synchronize Master Trade Execution Lifecycle with Authoritative Decision
-  if (STATE.masterTrade) {
-    if (masterDecision.approved && STATE.masterTrade.status === 'IDLE') {
-      STATE.masterTrade.status = 'ACTIVE';
-      STATE.masterTrade.direction = masterDecision.direction;
-      STATE.masterTrade.action = masterDecision.signal;
-      STATE.masterTrade.entryPrice = STATE.price;
-      STATE.masterTrade.tpPrice = masterDecision.execution?.takeProfitPrice || masterDecision.movement?.favorable?.targetPrice || masterDecision.targetRange?.base;
-      STATE.masterTrade.spPrice = masterDecision.execution?.stopPrice || masterDecision.movement?.adverse?.stopPrice || masterDecision.stopRange?.stopPrice;
-      STATE.masterTrade.tpDistance = Math.abs(STATE.masterTrade.tpPrice - STATE.price);
-      STATE.masterTrade.slDistance = Math.abs(STATE.masterTrade.spPrice - STATE.price);
-      STATE.masterTrade.positionETH = masterDecision.risk.positionSizeETH;
-      STATE.masterTrade.positionUSD = (masterDecision.risk.positionSizeETH * STATE.price).toFixed(2);
-      STATE.masterTrade.entryTime = Date.now();
-      STATE.masterTrade.entryTimeStr = new Date().toLocaleTimeString();
-      STATE.masterTrade.entryDateStr = new Date().toISOString().slice(0, 10);
-      STATE.masterTrade.boughtTime = masterDecision.direction === 1 ? STATE.masterTrade.entryTimeStr : null;
-      STATE.masterTrade.soldTime = masterDecision.direction === -1 ? STATE.masterTrade.entryTimeStr : null;
-      STATE.masterTrade.elapsedSec = 0;
-      STATE.masterTrade.elapsedStr = '0s';
-      STATE.masterTrade.livePnlUSD = '0.00';
-      STATE.masterTrade.livePnlPct = 0;
-      STATE.masterTrade.progressPct = 0;
-      STATE.masterTrade.scanReason = null;
-    } else if (!masterDecision.approved && STATE.masterTrade.status === 'IDLE') {
-      STATE.masterTrade.action = 'SCANNING';
-      STATE.masterTrade.scanReason = masterDecision.risk?.rejectionReason || masterDecision.reason;
-    }
-  }
+  // (masterTrade lifecycle is now handled AFTER the pre-trade risk gate below)
 
   // ── LAYER 3: PORTFOLIO CONSTRUCTION (Mastermind Governs Position Weight) ──
   const targetETHOverride = (masterDecision.approved && masterDecision.risk?.approved)
@@ -856,6 +854,41 @@ function tick() {
   // ── LAYER 5 (Pre-Trade): Production Risk Gatekeeper ──
   const preTrade = prodRiskEngine.checkPreTrade(portfolioLayer.targetETH, STATE.price, STATE.equity);
 
+  // ── ACTIVATE MASTER TRADE (Only after BOTH MasterMind approval AND Pre-Trade risk check pass) ──
+  // This prevents STATE.masterTrade from showing ACTIVE when the final risk gate blocks execution.
+  if (STATE.masterTrade) {
+    if (masterDecision.approved && preTrade.approved && STATE.masterTrade.status === 'IDLE') {
+      STATE.masterTrade.status = 'ACTIVE';
+      STATE.masterTrade.direction = masterDecision.direction;
+      STATE.masterTrade.action = masterDecision.signal;
+      STATE.masterTrade.entryPrice = STATE.price;
+      STATE.masterTrade.tpPrice = masterDecision.execution?.takeProfitPrice || masterDecision.movement?.favorable?.targetPrice;
+      STATE.masterTrade.spPrice = masterDecision.execution?.stopPrice || masterDecision.movement?.adverse?.stopPrice;
+      STATE.masterTrade.tpDistance = STATE.masterTrade.tpPrice ? Math.abs(STATE.masterTrade.tpPrice - STATE.price) : 0;
+      STATE.masterTrade.slDistance = STATE.masterTrade.spPrice ? Math.abs(STATE.masterTrade.spPrice - STATE.price) : 0;
+      STATE.masterTrade.positionETH = masterDecision.risk.positionSizeETH;
+      STATE.masterTrade.positionUSD = (masterDecision.risk.positionSizeETH * STATE.price).toFixed(2);
+      STATE.masterTrade.entryTime = Date.now();
+      STATE.masterTrade.entryTimeStr = new Date().toLocaleTimeString();
+      STATE.masterTrade.entryDateStr = new Date().toISOString().slice(0, 10);
+      STATE.masterTrade.boughtTime = masterDecision.direction === 1 ? STATE.masterTrade.entryTimeStr : null;
+      STATE.masterTrade.soldTime = masterDecision.direction === -1 ? STATE.masterTrade.entryTimeStr : null;
+      STATE.masterTrade.elapsedSec = 0;
+      STATE.masterTrade.elapsedStr = '0s';
+      STATE.masterTrade.livePnlUSD = '0.00';
+      STATE.masterTrade.livePnlPct = 0;
+      STATE.masterTrade.progressPct = 0;
+      STATE.masterTrade.scanReason = null;
+    } else if (masterDecision.approved && !preTrade.approved && STATE.masterTrade.status === 'IDLE') {
+      // MasterMind approved but final risk gate blocked — stay in SCANNING, never flip to ACTIVE
+      STATE.masterTrade.status = 'IDLE';
+      STATE.masterTrade.action = 'SCANNING';
+      STATE.masterTrade.scanReason = `RISK_BLOCKED: ${preTrade.reason || 'Pre-trade risk check failed'}`;
+    } else if (!masterDecision.approved && STATE.masterTrade.status === 'IDLE') {
+      STATE.masterTrade.action = 'SCANNING';
+      STATE.masterTrade.scanReason = masterDecision.risk?.rejectionReason || masterDecision.reason;
+    }
+  }
   // ── LAYER 4: SMART EXECUTION (Strictly Governed by Mastermind + Risk Gate) ──
   let execResult = null;
   const executionAuthorized = masterDecision.approved && preTrade.approved;

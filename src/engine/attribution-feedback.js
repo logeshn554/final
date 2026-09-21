@@ -56,6 +56,17 @@ export class AttributionFeedbackEngine {
     this.tickCount = 0;
     this.pnlHistoryA = [];
     this.pnlHistoryB = [];
+
+    // Empirical rolling beta estimation state
+    // We maintain parallel rolling windows of (price_delta, position_pnl) pairs
+    // and derive beta = cov(position_pnl, price_delta) / var(price_delta)
+    this._priceDeltas = [];   // rolling window of price changes
+    this._positionPnLs = [];  // rolling window of position * priceDelta
+    this._betaEstimate = null; // null until >= 20 samples (uses prior 0.35 before that)
+    this._betaPrior = 0.35;   // Crypto-market-beta prior used before empirical estimation
+
+    // Empirical rolling alpha window for z-score drift detection
+    this._alphaHistory = [];  // rolling 60-tick window of compositeAlpha values
   }
 
   /**
@@ -73,13 +84,56 @@ export class AttributionFeedbackEngine {
     const priceDelta = currentPrice - (prevPrice || currentPrice);
     const tickPnL = position * priceDelta;
 
-    // ── 1. Brinson & Factor PnL Attribution ──
-    const betaReturnComponent = priceDelta * 0.35; // portion explained by crypto market beta
+    // ── 1. Empirical Rolling Beta Estimation ──
+    // Maintain rolling windows (last 60 ticks) of price changes and position PnL.
+    // Estimate rolling OLS beta: cov(positionPnL, priceDelta) / var(priceDelta)
+    this._priceDeltas.push(priceDelta);
+    this._positionPnLs.push(tickPnL);
+    if (this._priceDeltas.length > 60) {
+      this._priceDeltas.shift();
+      this._positionPnLs.shift();
+    }
+
+    let empiricalBeta = this._betaPrior; // start with prior
+    if (this._priceDeltas.length >= 20) {
+      const meanDelta = mean(this._priceDeltas);
+      const meanPnL = mean(this._positionPnLs);
+      let covSum = 0;
+      let varSum = 0;
+      for (let i = 0; i < this._priceDeltas.length; i++) {
+        const dDelta = this._priceDeltas[i] - meanDelta;
+        const dPnL = this._positionPnLs[i] - meanPnL;
+        covSum += dDelta * dPnL;
+        varSum += dDelta * dDelta;
+      }
+      if (varSum > 1e-12) {
+        this._betaEstimate = clamp(covSum / varSum, -2.0, 2.0);
+      }
+      if (this._betaEstimate !== null) {
+        empiricalBeta = this._betaEstimate;
+      }
+    }
+
+    // Brinson & Factor PnL Attribution using empirical beta
+    const betaReturnComponent = priceDelta * empiricalBeta;
     const tickBetaPnL = position * betaReturnComponent;
 
+    // ── 2. Execution Alpha — Real Fill vs Market Savings ──
+    // Use actual fill price vs. market price difference when available from execResult.
+    // Never use fixed coefficient; fall back to 0 (no claimed savings) when not measurable.
     let tickExecPnL = 0;
     if (execResult && execResult.sliceETH > 0) {
-      tickExecPnL = execResult.sliceETH * 0.15;
+      if (execResult.fillPrice && execResult.marketPrice && execResult.fillPrice > 0) {
+        // Actual measured improvement: (market - fill) * quantity for a buy; (fill - market) * qty for a sell
+        const side = execResult.side || 'BUY';
+        const fillVsMarket = side === 'BUY'
+          ? execResult.marketPrice - execResult.fillPrice
+          : execResult.fillPrice - execResult.marketPrice;
+        tickExecPnL = fillVsMarket * execResult.sliceETH;
+      } else if (execResult.slippageSavingsBps !== undefined && execResult.slippageSavingsBps > 0) {
+        tickExecPnL = (execResult.slippageSavingsBps / 10000) * execResult.sliceETH * (currentPrice || 1);
+      }
+      // If neither field is present, tickExecPnL remains 0 (no false positive savings claimed)
       this.tca.slippageSavingsUSD += tickExecPnL;
     }
 
@@ -98,26 +152,45 @@ export class AttributionFeedbackEngine {
     this.attribution.betaPct = Math.round((Math.abs(this.attribution.betaPnLUSD) / absTotal) * 100);
     this.attribution.executionPct = Math.max(0, 100 - this.attribution.alphaPct - this.attribution.betaPct);
 
-    // ── 2. Post-Trade Slippage TCA ──
+    // ── 3. Post-Trade Slippage TCA ──
     if (execResult && execResult.slippageBps !== undefined) {
       this.tca.avgSlippageBps = Math.round((0.95 * this.tca.avgSlippageBps + 0.05 * Math.abs(execResult.slippageBps)) * 10) / 10;
     }
 
-    // ── 3. Model Drift Detection ──
-    // Measured empirical shift in composite alpha variance
-    const alphaDrift = Math.abs(compositeAlpha || 0);
-    this.modelDrift.driftIndex = Math.round(clamp(alphaDrift * 0.25, 0.02, 0.85) * 100) / 100;
-    this.modelDrift.correlationShift = Math.round((this.modelDrift.driftIndex * 0.6) * 100) / 100;
+    // ── 4. Model Drift Detection (Rolling Z-Score Variance Test) ──
+    // Maintain a rolling 60-tick window of compositeAlpha values.
+    // Drift is measured as |z-score| of the current alpha relative to recent distribution.
+    // This replaces the previous heuristic: |alpha| * 0.25.
+    const alphaVal = compositeAlpha || 0;
+    this._alphaHistory.push(alphaVal);
+    if (this._alphaHistory.length > 60) {
+      this._alphaHistory.shift();
+    }
+
+    if (this._alphaHistory.length >= 10) {
+      const rollingMean = mean(this._alphaHistory);
+      const rollingStd = std(this._alphaHistory);
+      // z-score of current alpha vs. rolling distribution; clamped to [0, 3]
+      const zScore = rollingStd > 1e-8 ? Math.abs(alphaVal - rollingMean) / rollingStd : 0;
+      // driftIndex = 0 means stationary; 1 means 3-sigma departure (severe drift)
+      this.modelDrift.driftIndex = Math.round(clamp(zScore / 3.0, 0, 1) * 100) / 100;
+      // Correlation shift approximated as fraction of explained variance
+      this.modelDrift.correlationShift = Math.round(clamp(1 - (1 / (1 + this.modelDrift.driftIndex * 2)), 0, 1) * 100) / 100;
+    } else {
+      // Not enough data yet — keep calibrating label
+      this.modelDrift.driftIndex = 0;
+      this.modelDrift.correlationShift = 0;
+    }
 
     if (this.modelDrift.driftIndex < 0.25) {
       this.modelDrift.driftStatus = 'STABLE (Optimal)';
-    } else if (this.modelDrift.driftIndex < 0.45) {
+    } else if (this.modelDrift.driftIndex < 0.55) {
       this.modelDrift.driftStatus = 'MODERATE (Monitoring)';
     } else {
       this.modelDrift.driftStatus = 'DRIFT DETECTED (Re-calibrating)';
     }
 
-    // ── 4. A/B Shadow Paper Trading ──
+    // ── 5. A/B Shadow Paper Trading ──
     this.abTesting.modelA.pnlUSD = Math.round(totalPnL * 100) / 100;
     // Benchmark B uses naive trend signal (price momentum without deep ensemble)
     const benchmarkSignal = Math.sign(priceDelta);
@@ -146,7 +219,7 @@ export class AttributionFeedbackEngine {
         : 0.0;
     }
 
-    // ── 5. Walk-Forward Metrics ──
+    // ── 6. Walk-Forward Metrics ──
     if (this.walkForward.inSampleSharpe > 0) {
       const oosRatio = this.walkForward.oosSharpe / this.walkForward.inSampleSharpe;
       this.walkForward.oosEfficiency = `${(oosRatio * 100).toFixed(1)}% (Target > 70%)`;

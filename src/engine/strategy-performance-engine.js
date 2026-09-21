@@ -530,37 +530,34 @@ export class StrategyPerformanceEngine {
         else if (sigData.stopLoss && !isNaN(sigData.stopLoss)) stratStop = Number(sigData.stopLoss);
         else if (sigData.stop && !isNaN(sigData.stop)) stratStop = Number(sigData.stop);
 
-        // If not provided, derive based on strategy category horizon & market volatility
+        // If not provided, derive based on empirical observed MFE/MAE from paper trade history
+        // Falls back to regime-scaled ATR prior only when < 5 trades have been observed (no category constants)
         if (!stratTarget || !stratStop) {
-          let horizonMultiplier = 1.0;
-          let riskRewardBias = 1.4;
+          let targetDistance;
+          let stopDistance;
 
-          if (strat.category === 'Microstructure' || strat.id.includes('micro') || strat.id.includes('lob')) {
-            // High-frequency order book depth scalp: tight target and stop
-            horizonMultiplier = 0.55;
-            riskRewardBias = 1.25;
-          } else if (strat.category === 'Pattern' || strat.id.includes('candle')) {
-            // Candlestick pattern swing
-            horizonMultiplier = 1.1;
-            riskRewardBias = 1.35;
-          } else if (strat.category === 'Institutional' || strat.id.includes('hjb')) {
-            // Inventory reservation price spread
-            horizonMultiplier = 1.45;
-            riskRewardBias = 1.5;
-          } else if (strat.category === 'Python') {
-            horizonMultiplier = 1.3;
-            riskRewardBias = 1.4;
-          } else if (strat.category === 'RL' && !mp?.favorable?.[0]?.distance) {
-            // Slight differentiation based on algorithm family
-            const algoMod = ((strat.algoId || 1) % 4) * 0.08;
-            horizonMultiplier = 1.0 + algoMod;
-            riskRewardBias = 1.3 + (algoMod * 0.4);
+          const hasEmpiricalData = strat.totalTrades >= 5 && curAtr > 0;
+
+          if (hasEmpiricalData) {
+            // Empirical target from observed average winning trade size (MFE proxy)
+            const empiricalTargetAtr = strat.avgWinnerUSD / curAtr;
+            // Empirical stop from observed average losing trade size (MAE proxy)
+            const empiricalStopAtr = strat.avgLoserUSD / curAtr;
+            // Blend empirical with market movement prediction (60/40 empirical/market)
+            const marketFavMult = baseFavMove / Math.max(0.01, curAtr);
+            const marketAdvMult = baseAdvMove / Math.max(0.01, curAtr);
+            const blendedTargetAtr = (empiricalTargetAtr * 0.60 + marketFavMult * 0.40);
+            const blendedStopAtr = (empiricalStopAtr * 0.60 + marketAdvMult * 0.40);
+            targetDistance = Math.max(curAtr * 0.30, blendedTargetAtr * curAtr);
+            stopDistance = Math.max(curAtr * 0.20, blendedStopAtr * curAtr);
+          } else {
+            // Prior before empirical data: regime-scaled ATR (no hardcoded category table)
+            // Regime scaling: BREAKOUT/TREND get 1.4× ATR target; VOLATILE gets 0.8×; else 1.0×
+            const regScaleMap = { BREAKOUT: 1.4, TREND_UP: 1.3, TREND_DOWN: 1.3, HIGH_VOLATILITY: 0.8, MEAN_REVERTING: 0.75, SIDEWAYS: 0.75 };
+            const regScale = regScaleMap[currentRegime] || 1.0;
+            targetDistance = baseFavMove > 0 ? baseFavMove * regScale : curAtr * regScale;
+            stopDistance = baseAdvMove > 0 ? baseAdvMove * regScale : (targetDistance * 0.65);
           }
-
-          const targetDistance = baseFavMove * (mp?.favorable?.[0]?.distance ? 1.0 : horizonMultiplier);
-          const stopDistance = (mp?.adverseMovement?.expected || mp?.adverse?.expected)
-            ? baseAdvMove
-            : (targetDistance / riskRewardBias);
 
           if (!stratTarget) {
             stratTarget = direction > 0 ? (price + targetDistance) : (price - targetDistance);
@@ -959,13 +956,24 @@ export class StrategyPerformanceEngine {
   getState(currentRegime = 'TRENDING') {
     const winners = this.getWinners(currentRegime);
     const leaderboard = this.getLeaderboard();
+    const rKey = this._normalizeRegimeKey(currentRegime);
 
-    // Map weights dictionary for instant O(1) MasterMind lookup
+    // Map weights, signals, and per-strategy regime affinity for O(1) MasterMind lookup.
+    // MasterMind uses the full formula: w_i * c_i * r_i * d_i where r_i = per-strategy regime affinity.
     const weights = {};
     const signals = {};
+    const strategiesMeta = {};
     for (const s of Object.values(this.strategies)) {
       weights[s.id] = s.dynamicWeight;
       signals[s.id] = s.lastSignal;
+      // Expose the empirical regime affinity score for the CURRENT regime so MasterMind
+      // can use it directly instead of always defaulting to 1.0
+      const regStat = s.regimePerformance[rKey];
+      strategiesMeta[s.id] = {
+        regimeScore: regStat && regStat.trades >= 3 ? regStat.affinityScore : s.regimeScore,
+        performanceScore: s.performanceScore,
+        health: s.health,
+      };
     }
 
     const summary = {
@@ -995,6 +1003,8 @@ export class StrategyPerformanceEngine {
       summary,
       weights,
       signals,
+      // Per-strategy regime affinity map — used by MasterMind for the complete w×c×r×d formula
+      strategies: strategiesMeta,
       leaderboard,
     };
   }

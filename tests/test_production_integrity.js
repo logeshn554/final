@@ -98,7 +98,8 @@ console.log('\n[3] TEST: Market-Driven Exits (Trailing Stop & Signal Reversal)')
     currentPrice: 2500.0,
     atr: 10.0,
     regime: 'BREAKOUT',
-    movementDistribution: {
+    movementPrediction: {
+      // The field expected by ingestSignals is adverseMovement (not adverseDistribution)
       predictedMovement: { mainMove: 12.0 },
       adverseMovement: { expected: 6.0 },
     },
@@ -108,8 +109,8 @@ console.log('\n[3] TEST: Market-Driven Exits (Trailing Stop & Signal Reversal)')
   assert(openTrade !== undefined, 'Microstructure trade opened');
   const initialStop = openTrade.predictedStop;
 
-  // Price moves favorably towards target (+6 pts)
-  perfEngine.updateMarketData(2506.0, 0.15, null, null, 'BREAKOUT');
+  // Price moves favorably towards target (+11 pts — exceeds 40% of any regime-scaled ATR target)
+  perfEngine.updateMarketData(2511.0, 0.15, null, null, 'BREAKOUT');
   assert(openTrade.predictedStop > initialStop, `Stop dynamically trailed upward from $${initialStop} to $${openTrade.predictedStop}`);
 
   // Strategy reverses signal to SELL: dynamic early exit trigger
@@ -157,21 +158,110 @@ console.log('\n[5] TEST: Attribution Feedback Engine (Zero rnd, Real Variance)')
 console.log('\n[6] TEST: Manual Execution MasterMind Single Authority');
 {
   const mm = new MastermindEngine();
+  const perfEngine = new StrategyPerformanceEngine(2500.0);
+  const perfState = perfEngine.getState('TREND_UP');
+
+  // Provide strong directional signals so confidence >= 0.40
+  const richSignals = {};
+  for (let i = 0; i < 10; i++) {
+    richSignals[`rl_algo_${i}`] = { direction: 1, signal: 'BUY', conf: 0.82 };
+  }
+  const richCtx = {
+    price: 2500.0,
+    signals: richSignals,
+    strategyPerformance: { ...perfState, signals: richSignals, weights: {}, strategies: {} },
+    pythonEngineDecision: { signal: 'BUY', confidence: 0.80 },
+    killSwitch: false,
+  };
 
   // Test normal authorized manual trade
-  const approvedManual = mm.evaluateManual(1, { price: 2500.0, killSwitch: false });
-  assert(approvedManual.approved === true, 'Standard manual trade approved under safe market envelope');
+  const approvedManual = mm.evaluateManual(1, richCtx);
+  assert(approvedManual.approved === true, `Standard manual trade approved under safe market envelope (conf: ${(approvedManual.confidence * 100).toFixed(1)}%)`);
   assert(approvedManual.direction === 1, 'Manual BUY direction confirmed');
 
   // Test kill switch rejection
-  const blockedManual = mm.evaluateManual(1, { price: 2500.0, killSwitch: true });
+  const blockedManual = mm.evaluateManual(1, { ...richCtx, killSwitch: true });
   assert(blockedManual.approved === false, 'Manual trade blocked by Emergency Kill Switch');
   assert(blockedManual.reason.includes('Emergency Kill Switch'), 'Rejection reason documented');
 
   // Test Kyle toxicity rejection
-  const toxicManual = mm.evaluateManual(-1, { price: 2500.0, microstructure: { vpin: 0.52 } });
+  const toxicManual = mm.evaluateManual(-1, { ...richCtx, microstructure: { vpin: 0.52 } });
   assert(toxicManual.approved === false, 'Manual trade blocked by toxic informed flow');
   assert(toxicManual.reason.includes('VPIN'), 'Rejection reason identifies VPIN');
+
+  // Test confidence floor gate
+  const lowConfCtx = { price: 2500.0, signals: {}, strategyPerformance: { weights: {}, signals: {}, strategies: {} }, killSwitch: false };
+  const lowConfManual = mm.evaluateManual(1, lowConfCtx);
+  assert(lowConfManual.approved === false || lowConfManual.confidence >= 0.40, 'Manual trade either declined (low conf) or approved at adequate confidence');
+}
+
+// [7] Data Quality Gate: Requires priceFresh AND (depthFresh OR klinesFresh)
+console.log('\n[7] TEST: Data Quality Gate Freshness Requirements');
+{
+  const mainCode = readFileSync('./src/main.js', 'utf-8');
+  // Gate must require priceFresh (not just STATE.price > 0)
+  assert(mainCode.includes('priceFresh &&'), 'Gate requires priceFresh condition');
+  // Gate must combine depth or klines (not just presence)
+  assert(mainCode.includes('depthFresh || klinesFresh'), 'Gate uses depthFresh OR klinesFresh disjunction');
+  // No old loose guard (price !== null && STATE.prices.length >= 5) allowed as the sole gate
+  assert(!mainCode.includes("STATE.price !== null && STATE.price > 0 && STATE.prices.length >= 5 && STATE.connection.status !== 'offline'"), 'Old loose gate condition replaced with fresh-data checks');
+  // Gate must differentiate label between full vs. partial data
+  assert(mainCode.includes('GATE_OPEN (LIVE PRICE + ORDER BOOK)'), 'Gate label correctly distinguishes full vs partial data availability');
+}
+
+// [8] masterTrade lifecycle: stays SCANNING when preTrade blocks
+console.log('\n[8] TEST: masterTrade Does Not Activate Without Pre-Trade Risk Approval');
+{
+  const mainCode = readFileSync('./src/main.js', 'utf-8');
+  // The new activation block must gate on BOTH masterDecision.approved AND preTrade.approved
+  assert(mainCode.includes('masterDecision.approved && preTrade.approved && STATE.masterTrade.status === \'IDLE\''),
+    'masterTrade ACTIVE status only set when masterDecision.approved AND preTrade.approved');
+  // RISK_BLOCKED status must be set when MasterMind approved but risk gate failed
+  assert(mainCode.includes('RISK_BLOCKED'), 'RISK_BLOCKED status set when pre-trade risk gate fails');
+  // The premature early-block (before pre-trade) must no longer exist
+  assert(!mainCode.includes('masterDecision.approved && STATE.masterTrade.status === \'IDLE\' && !preTrade'),
+    'No premature masterTrade ACTIVE activation before pre-trade gate');
+}
+
+// [9] Manual Trade Confidence Gate
+console.log('\n[9] TEST: evaluateManual() Confidence Gate (>= 0.40 floor)');
+{
+  const mmCode = readFileSync('./src/engine/mastermind.js', 'utf-8');
+  // evaluateManual must check confidence threshold (not just kill switch + VPIN)
+  assert(mmCode.includes('baseDecision.confidence < 0.40'),
+    'evaluateManual applies minimum confidence threshold of 0.40');
+  assert(mmCode.includes('manual safety floor'),
+    'evaluateManual rejection message explains the safety floor requirement');
+}
+
+// [10] Attribution Engine: No Hardcoded Beta
+console.log('\n[10] TEST: Attribution Engine Empirical Beta (No 0.35 Fixed Coefficient)');
+{
+  const attrCode = readFileSync('./src/engine/attribution-feedback.js', 'utf-8');
+  // Old hardcoded beta line must be gone
+  assert(!attrCode.includes('priceDelta * 0.35'), 'Old hardcoded beta 0.35 removed from attribution');
+  // Old hardcoded execution coefficient must be gone
+  assert(!attrCode.includes('execResult.sliceETH * 0.15'), 'Old hardcoded execution savings coefficient 0.15 removed');
+  // Old synthetic drift line must be gone
+  assert(!attrCode.includes('alphaDrift * 0.25'), 'Old synthetic drift heuristic |alpha|*0.25 replaced');
+  // New empirical beta must be present
+  assert(attrCode.includes('_betaEstimate'), 'Rolling empirical beta estimation field present');
+  // New z-score drift must be present
+  assert(attrCode.includes('zScore / 3.0'), 'Rolling z-score drift detection present');
+
+  const feedback = new AttributionFeedbackEngine();
+  // Pump 25 ticks with a varying price series (non-constant delta) so OLS variance is non-zero
+  const testPrices = [2500, 2502, 2499, 2504, 2501, 2507, 2503, 2509, 2505, 2511,
+                      2507, 2513, 2510, 2515, 2512, 2518, 2514, 2520, 2516, 2522,
+                      2518, 2524, 2521, 2526, 2523, 2529];
+  for (let i = 1; i < testPrices.length; i++) {
+    feedback.update(testPrices[i], testPrices[i - 1], 1.0, (i - 1) * 0.5, null, 0.1 + Math.sin(i) * 0.05);
+  }
+  assert(feedback._betaEstimate !== null, 'Empirical beta estimated after 20+ ticks (not stuck at prior)');
+  assert(typeof feedback._betaEstimate === 'number', 'Empirical beta is a number');
+  assert(isFinite(feedback._betaEstimate), 'Empirical beta is finite');
+  assert(feedback.modelDrift.driftIndex >= 0 && feedback.modelDrift.driftIndex <= 1,
+    `Drift index in [0,1] range: ${feedback.modelDrift.driftIndex}`);
 }
 
 console.log('─────────────────────────────────────────────────────────────────');

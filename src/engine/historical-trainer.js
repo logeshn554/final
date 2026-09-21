@@ -352,6 +352,20 @@ export class HistoricalTrainer {
     const tf1m = this.datasets['1m'];
 
     const totalCandlesIngested = tf1h.length + tf30m.length + tf15m.length + tf1m.length;
+
+    // Guard: if no exchange data was retrieved from any source, cleanly enter standby.
+    // This replaces the old path that would crash on tf1h[0].open.
+    if (tf1h.length === 0) {
+      this.metrics.datasetSize = `${durationLabel} Multi-Timeframe: No exchange data received`;
+      this.metrics.startingPrice = '--';
+      this.metrics.endingPrice = '--';
+      this.metrics.validationStatus = 'AWAITING_REAL_EXCHANGE_DATA';
+      this.metrics.activePhase = 'STANDBY · No data returned from any exchange source';
+      this.isTraining = false;
+      onProgress({ progress: 0, step: 0, totalSteps: 0, loss: '--', winRate: '--', confluenceWinRate: '--', phase: 'STANDBY (No exchange data received — check network / CORS)' });
+      return this.metrics;
+    }
+
     this.metrics.datasetSize = `${durationLabel} Multi-Timeframe: ${tf1h.length} 1h (60m) · ${tf30m.length} 30m · ${tf15m.length} 15m · ${tf1m.length} 1m (${totalCandlesIngested.toLocaleString()} bars)`;
     this.metrics.startingPrice = `$${Number(tf1h[0].open).toFixed(2)}`;
     this.metrics.endingPrice = `$${Number(tf1h[tf1h.length - 1].close).toFixed(2)}`;
@@ -389,6 +403,10 @@ export class HistoricalTrainer {
 
     let currentGlobalStep = 0;
     const totalSimSteps = timeframes.reduce((sum, tf) => sum + tf.candles.length, 0);
+
+    // Accumulate real model loss for honest finalLoss reporting (no synthetic math curve)
+    let stepLossSum = 0;
+    let stepLossCount = 0;
 
     for (let tfIdx = 0; tfIdx < timeframes.length; tfIdx++) {
       const { name, candles, label } = timeframes[tfIdx];
@@ -455,6 +473,12 @@ export class HistoricalTrainer {
           try {
             algorithms[a].update(features, reward, false);
             algorithms[a].trainSteps = (algorithms[a].trainSteps || 0) + 1;
+            // Accumulate real model loss for finalLoss reporting
+            const lossVal = typeof algorithms[a].getLoss === 'function' ? Math.abs(algorithms[a].getLoss()) : null;
+            if (lossVal !== null && isFinite(lossVal)) {
+              stepLossSum += lossVal;
+              stepLossCount++;
+            }
           } catch (e) {}
         }
 
@@ -482,9 +506,11 @@ export class HistoricalTrainer {
             progress: this.progress,
             step: currentGlobalStep,
             totalSteps: totalSimSteps,
-            loss: (0.015 * Math.exp(-this.progress / 50)).toFixed(4),
-            winRate: overallTrades > 0 ? ((overallWins / overallTrades) * 100).toFixed(1) : '62.5',
-            confluenceWinRate: confluenceTrades > 0 ? ((confluenceWins / confluenceTrades) * 100).toFixed(1) : '71.4',
+            // Honest loss: real average model loss when available, '--' during warm-up before data arrives
+            loss: stepLossCount > 0 ? (stepLossSum / stepLossCount).toFixed(4) : '--',
+            // Honest win rates: only show actual measured numbers, never fake fallback percentages
+            winRate: overallTrades > 0 ? ((overallWins / overallTrades) * 100).toFixed(1) : '--',
+            confluenceWinRate: confluenceTrades > 0 ? ((confluenceWins / confluenceTrades) * 100).toFixed(1) : '--',
             phase: `${label} (Bar ${s}/${inSample.length})`,
           });
           await new Promise(r => setTimeout(r, 2));
@@ -565,7 +591,8 @@ export class HistoricalTrainer {
       this.metrics.confluenceWinRate = `${confWinRate.toFixed(1)}%`;
       this.metrics.sharpeRatio = annualizedSharpe.toFixed(2);
       this.metrics.totalReturnPct = `${totalReturn >= 0 ? '+' : ''}${(totalReturn * 100).toFixed(1)}%`;
-      this.metrics.finalLoss = (0.015 * Math.exp(-this.progress / 50)).toFixed(4);
+      // Real average model loss from accumulated getLoss() calls; '--' if no loss values were recorded
+      this.metrics.finalLoss = stepLossCount > 0 ? (stepLossSum / stepLossCount).toFixed(4) : '--';
       this.metrics.validationStatus = is6M
         ? '6-MONTH_REAL_EXCHANGE_DATA_VALIDATED (1m, 15m, 30m, 60m)'
         : '1-YEAR_REAL_EXCHANGE_DATA_VALIDATED (1m, 15m, 30m, 60m)';
