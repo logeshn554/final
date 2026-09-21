@@ -37,10 +37,11 @@ class BinanceClient:
         self.timeframes = config.get("timeframes", ["1m", "5m", "15m", "1h"]) if isinstance(config, dict) else ["1m", "5m", "15m", "1h"]
 
         self.rest_urls = binance_cfg.get("rest_urls", [
-            "https://data-api.binance.vision",
             "https://api.binance.com",
             "https://api1.binance.com",
             "https://api2.binance.com",
+            "https://api3.binance.com",
+            "https://data-api.binance.vision",
         ])
         self.ws_urls = binance_cfg.get("ws_urls", [
             "wss://stream.binance.com:9443/ws",

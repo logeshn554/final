@@ -3321,8 +3321,318 @@ export function renderAlgoCapitalBenchmarkPanel() {
 }
 
 // ═══════════════════════════════════════════════════════
+// DYNAMIC STRATEGY PERFORMANCE ENGINE LEADERBOARD & TELEMETRY
+// Continuous Paper Trading Evaluation Under Identical Execution Conditions
+// ═══════════════════════════════════════════════════════
+
+export function renderStrategyPerformancePanel() {
+  const el = document.getElementById('strategyPerformancePanel');
+  if (!el) return;
+
+  const sp = STATE.strategyPerformance;
+  const md = STATE.masterDecision;
+  const price = parseFloat(STATE.price) || 2600.0;
+
+  if (!sp) {
+    el.innerHTML = `
+      <div style="padding:14px;color:var(--muted);font-size:11px;font-family:JetBrains Mono, monospace;">
+        Initializing Dynamic Strategy Performance Engine... Awaiting tick updates and strategy signals.
+      </div>
+    `;
+    return;
+  }
+
+  const summary = sp.summary || {};
+  const leaderboard = sp.leaderboard || [];
+  const bestOverall = summary.bestOverall;
+  const bestRecent = summary.bestRecent;
+  const bestCurrentRegime = summary.bestCurrentRegime;
+  const weightedAgree = summary.weightedAgreement || {};
+
+  // Movement prediction derived from MasterMind (dynamic, no fixed %)
+  const mv = md?.movement || {};
+  const fav = mv.favorable || {};
+  const adv = mv.adverse || {};
+  const exec = md?.execution || {};
+
+  const entryPrice = exec.entryPrice || price;
+  const targetPrice = fav.targetPrice || (price + 15.0);
+  const stopPrice = adv.stopPrice || (price - 10.0);
+  const favDist = fav.selectedDistance || Math.abs(targetPrice - entryPrice);
+  const advDist = adv.selectedStopDistance || Math.abs(entryPrice - stopPrice);
+  const favProb = fav.selectedProbability !== undefined ? Math.round(fav.selectedProbability * 100) : 62;
+
+  // Build rows for Leaderboard Table
+  const tableRows = leaderboard.map((item, idx) => {
+    const isTop = idx === 0 && item.sampleSize >= 5;
+    const pnlCol = item.netPnl > 0 ? 'var(--green)' : item.netPnl < 0 ? 'var(--red)' : 'var(--muted)';
+    const recPnlCol = item.recentPnl > 0 ? 'var(--green)' : item.recentPnl < 0 ? 'var(--red)' : 'var(--muted)';
+    const winCol = item.winRate >= 0.65 ? 'var(--green)' : item.winRate >= 0.50 ? 'var(--accent)' : 'var(--warn)';
+    
+    // Health styling
+    let healthBadge = '';
+    if (item.health === 'HEALTHY') {
+      healthBadge = '<span class="badge" style="background:rgba(16,185,129,0.18);color:var(--green);border:1px solid var(--green);font-size:7px;padding:1px 5px;font-weight:900;">HEALTHY</span>';
+    } else if (item.health === 'WATCH') {
+      healthBadge = '<span class="badge" style="background:rgba(245,158,11,0.18);color:var(--warn);border:1px solid var(--warn);font-size:7px;padding:1px 5px;font-weight:900;">WATCH</span>';
+    } else if (item.health === 'DEGRADED') {
+      healthBadge = '<span class="badge" style="background:rgba(239,68,68,0.18);color:var(--red);border:1px solid var(--red);font-size:7px;padding:1px 5px;font-weight:900;">DEGRADED</span>';
+    } else {
+      healthBadge = '<span class="badge" style="background:rgba(255,255,255,0.08);color:var(--muted);border:1px solid rgba(255,255,255,0.2);font-size:7px;padding:1px 5px;font-weight:800;">INSUFFICIENT</span>';
+    }
+
+    // Signal styling
+    const sig = item.currentSignal || 'HOLD';
+    const sigCol = sig === 'BUY' ? 'var(--green)' : sig === 'SELL' ? 'var(--red)' : 'var(--muted)';
+    const sigBg = sig === 'BUY' ? 'rgba(16,185,129,0.15)' : sig === 'SELL' ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.05)';
+
+    const weightPct = ((item.weight || 0) * 100).toFixed(2);
+    const scorePct = ((item.score || 0) * 100).toFixed(1);
+    const winRatePct = ((item.winRate || 0) * 100).toFixed(1);
+    const ddPct = ((item.maxDrawdown || 0) * 100).toFixed(1);
+
+    return `
+      <tr style="border-bottom:1px solid rgba(26,48,96,0.35);font-size:8.5px;background:${isTop ? 'rgba(16,185,129,0.06)' : 'transparent'};">
+        <td style="padding:5px 6px;white-space:nowrap;">
+          ${isTop 
+            ? `<span class="badge" style="background:#f59e0b;color:#000;font-weight:900;font-size:7.5px;padding:1px 5px;">👑 #1 LEADER</span>` 
+            : `<span style="font-weight:800;color:${idx < 3 ? 'var(--accent)' : 'var(--muted)'};">#${item.rank}</span>`}
+        </td>
+        <td style="padding:5px 6px;color:var(--text);font-weight:700;white-space:nowrap;">
+          <b style="color:${isTop ? 'var(--green)' : 'var(--accent)'};font-size:9.5px;">${item.name}</b>
+          <span style="color:var(--muted);font-size:7px;margin-left:4px;font-family:monospace;">${item.strategyId}</span>
+        </td>
+        <td style="padding:5px 6px;white-space:nowrap;">
+          <span class="badge" style="background:rgba(0,212,255,0.08);color:var(--accent);font-size:6.5px;padding:1px 4px;text-transform:uppercase;">${item.category}</span>
+        </td>
+        <td style="padding:5px 6px;white-space:nowrap;">
+          <span style="font-weight:800;color:var(--text);">${item.sampleSize}</span>
+          ${item.sampleSize < 30 ? '<span style="color:var(--warn);font-size:7px;margin-left:2px;" title="Sample < 30 threshold">⚠️</span>' : ''}
+        </td>
+        <td style="padding:5px 6px;white-space:nowrap;">
+          <span style="font-weight:900;color:${winCol};">${winRatePct}%</span>
+        </td>
+        <td style="padding:5px 6px;white-space:nowrap;">
+          <span style="font-weight:900;color:${pnlCol};">${item.netPnl >= 0 ? '+' : ''}$${item.netPnl.toFixed(2)}</span>
+          <div style="font-size:6.5px;color:var(--muted);">${(item.totalFees + item.totalSlippage).toFixed(3)} cost</div>
+        </td>
+        <td style="padding:5px 6px;white-space:nowrap;color:var(--accent);font-weight:800;">
+          ${item.profitFactor.toFixed(2)}
+        </td>
+        <td style="padding:5px 6px;white-space:nowrap;color:var(--warn);font-weight:800;">
+          ${ddPct}%
+        </td>
+        <td style="padding:5px 6px;white-space:nowrap;">
+          <span style="font-weight:800;color:${recPnlCol};">${item.recentPnl >= 0 ? '+' : ''}$${item.recentPnl.toFixed(2)}</span>
+        </td>
+        <td style="padding:5px 6px;white-space:nowrap;">
+          <b style="color:var(--accent);font-size:9.5px;">${scorePct}</b>
+        </td>
+        <td style="padding:5px 6px;white-space:nowrap;">
+          <b style="color:var(--text);background:rgba(0,212,255,0.12);padding:1px 5px;border-radius:3px;font-size:9px;">${weightPct}%</b>
+        </td>
+        <td style="padding:5px 6px;white-space:nowrap;">
+          ${healthBadge}
+        </td>
+        <td style="padding:5px 6px;white-space:nowrap;text-align:right;">
+          <span class="badge" style="background:${sigBg};color:${sigCol};border:1px solid ${sigCol};font-size:8px;font-weight:900;padding:1px 6px;">
+            ${sig}
+          </span>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  el.innerHTML = `
+    <!-- Main Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;border-bottom:1px solid rgba(26,48,96,0.6);padding-bottom:8px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font-size:20px;">⚖️</span>
+        <div>
+          <div style="font-size:12px;font-weight:900;color:var(--text);letter-spacing:0.6px;">
+            DYNAMIC STRATEGY PERFORMANCE ENGINE · CONTINUOUS PAPER TRADING
+          </div>
+          <div style="font-size:8px;color:var(--muted);margin-top:2px;">
+            Identical Execution Conditions · Binance 4 bps fee + 1.5 bps slippage · Multi-Metric Risk-Adjusted Scoring · Feeds MasterMind Weights
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+        <span class="badge" style="background:rgba(0,212,255,0.12);color:var(--accent);border:1px solid var(--accent);font-size:7.5px;font-weight:800;padding:2px 7px;">
+          📊 ${summary.totalStrategies || 0} STRATEGIES EVALUATED
+        </span>
+        <span class="badge" style="background:rgba(16,185,129,0.12);color:var(--green);border:1px solid var(--green);font-size:7.5px;font-weight:800;padding:2px 7px;">
+          ✓ ${summary.totalPaperTrades || 0} CLOSED TRADES (${summary.openPaperTrades || 0} OPEN)
+        </span>
+        <span class="badge" style="background:rgba(245,158,11,0.12);color:var(--warn);border:1px solid var(--warn);font-size:7.5px;font-weight:800;padding:2px 7px;">
+          REGIME: ${summary.regime || 'UNKNOWN'}
+        </span>
+      </div>
+    </div>
+
+    <!-- 3 Winner Champion Cards Grid -->
+    <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:8px;margin-bottom:10px;">
+      <!-- Card 1: Best Overall -->
+      <div style="background:rgba(15,23,42,0.8);border:1px solid rgba(0,212,255,0.35);border-top:3px solid #f59e0b;border-radius:5px;padding:8px 10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:8px;font-weight:900;color:#f59e0b;letter-spacing:0.5px;">👑 BEST STRATEGY OVERALL</span>
+          <span class="badge" style="background:rgba(245,158,11,0.15);color:#f59e0b;font-size:6.5px;padding:1px 4px;">MULTI-METRIC SCORE</span>
+        </div>
+        <div style="font-size:12px;font-weight:900;color:var(--text);margin:4px 0 2px;">
+          ${bestOverall ? bestOverall.name : '<span style="color:var(--muted);font-size:10px;">NO RELIABLE WINNER YET</span>'}
+        </div>
+        <div style="font-size:8px;color:var(--muted);display:flex;justify-content:space-between;">
+          <span>Net PnL: <b style="color:${bestOverall?.netPnl >= 0 ? 'var(--green)' : 'var(--red)'};">${bestOverall ? (bestOverall.netPnl >= 0 ? '+' : '') + '$' + bestOverall.netPnl.toFixed(2) : 'Awaiting data'}</b></span>
+          <span>Score: <b style="color:var(--accent);">${bestOverall ? (bestOverall.score * 100).toFixed(1) + '%' : 'N/A'}</b></span>
+        </div>
+        <div style="font-size:7px;color:var(--muted);margin-top:2px;">
+          Win Rate: ${bestOverall ? (bestOverall.winRate * 100).toFixed(1) + '%' : 'N/A'} · Sample: ${bestOverall ? bestOverall.sampleSize : 0} trades
+        </div>
+      </div>
+
+      <!-- Card 2: Best Recent -->
+      <div style="background:rgba(15,23,42,0.8);border:1px solid rgba(0,212,255,0.35);border-top:3px solid var(--accent);border-radius:5px;padding:8px 10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:8px;font-weight:900;color:var(--accent);letter-spacing:0.5px;">⚡ BEST RECENT STRATEGY</span>
+          <span class="badge" style="background:rgba(0,212,255,0.15);color:var(--accent);font-size:6.5px;padding:1px 4px;">RECENT 20-50 TRADES</span>
+        </div>
+        <div style="font-size:12px;font-weight:900;color:var(--text);margin:4px 0 2px;">
+          ${bestRecent ? bestRecent.name : '<span style="color:var(--muted);font-size:10px;">NO RELIABLE WINNER YET</span>'}
+        </div>
+        <div style="font-size:8px;color:var(--muted);display:flex;justify-content:space-between;">
+          <span>Recent PnL: <b style="color:${bestRecent?.recentPnl >= 0 ? 'var(--green)' : 'var(--red)'};">${bestRecent ? (bestRecent.recentPnl >= 0 ? '+' : '') + '$' + bestRecent.recentPnl.toFixed(2) : 'Awaiting data'}</b></span>
+          <span>Score: <b style="color:var(--accent);">${bestRecent ? (bestRecent.score * 100).toFixed(1) + '%' : 'N/A'}</b></span>
+        </div>
+        <div style="font-size:7px;color:var(--muted);margin-top:2px;">
+          Adapts dynamically to recent market shifts without forgetting long-term stability
+        </div>
+      </div>
+
+      <!-- Card 3: Best for Current Regime -->
+      <div style="background:rgba(15,23,42,0.8);border:1px solid rgba(0,212,255,0.35);border-top:3px solid var(--green);border-radius:5px;padding:8px 10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:8px;font-weight:900;color:var(--green);letter-spacing:0.5px;">🌊 BEST CURRENT REGIME</span>
+          <span class="badge" style="background:rgba(16,185,129,0.15);color:var(--green);font-size:6.5px;padding:1px 4px;">${summary.regime || 'UNKNOWN'}</span>
+        </div>
+        <div style="font-size:12px;font-weight:900;color:var(--text);margin:4px 0 2px;">
+          ${bestCurrentRegime ? bestCurrentRegime.name : '<span style="color:var(--muted);font-size:10px;">NO RELIABLE WINNER YET</span>'}
+        </div>
+        <div style="font-size:8px;color:var(--muted);display:flex;justify-content:space-between;">
+          <span>Regime PnL: <b style="color:${bestCurrentRegime?.pnl >= 0 ? 'var(--green)' : 'var(--red)'};">${bestCurrentRegime ? (bestCurrentRegime.pnl >= 0 ? '+' : '') + '$' + bestCurrentRegime.pnl.toFixed(2) : 'Awaiting data'}</b></span>
+          <span>Score: <b style="color:var(--accent);">${bestCurrentRegime ? (bestCurrentRegime.score * 100).toFixed(1) + '%' : 'N/A'}</b></span>
+        </div>
+        <div style="font-size:7px;color:var(--muted);margin-top:2px;">
+          Empirically calibrated regime compatibility (no hardcoded regime favoritism)
+        </div>
+      </div>
+    </div>
+
+    <!-- Dynamic Movement Distribution HUD (Strictly ZERO Fixed % TP/SL) -->
+    <div style="background:rgba(10,15,30,0.8);border:1.5px solid rgba(0,212,255,0.3);border-radius:5px;padding:8px 10px;margin-bottom:10px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;border-bottom:1px solid rgba(0,212,255,0.15);padding-bottom:4px;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span style="font-size:14px;">🎯</span>
+          <span style="font-size:9px;font-weight:900;color:var(--accent);letter-spacing:0.5px;">
+            DYNAMIC MOVEMENT DISTRIBUTION ENGINE (ZERO FIXED % TP/SL)
+          </span>
+        </div>
+        <span class="badge" style="background:rgba(16,185,129,0.15);color:var(--green);font-size:7px;font-weight:800;padding:1px 5px;">
+          PERFORMANCE-WEIGHTED CONSENSUS: ${weightedAgree.agreementPct || 0}%
+        </span>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:6px;font-size:8px;">
+        <!-- Dynamic Entry -->
+        <div style="background:rgba(0,0,0,0.3);padding:5px 8px;border-radius:4px;border-left:3px solid var(--accent);">
+          <div style="color:var(--muted);font-weight:800;font-size:7px;">1. DYNAMIC ENTRY PRICE</div>
+          <div style="font-size:12px;font-weight:900;color:var(--accent);margin:2px 0;">$${entryPrice.toFixed(2)}</div>
+          <div style="color:var(--muted);font-size:6.5px;">Current Binance Tick Level</div>
+        </div>
+
+        <!-- Dynamic Favorable Target -->
+        <div style="background:rgba(0,0,0,0.3);padding:5px 8px;border-radius:4px;border-left:3px solid var(--green);">
+          <div style="color:var(--green);font-weight:800;font-size:7px;">2. DYNAMIC TAKE PROFIT (TP)</div>
+          <div style="font-size:12px;font-weight:900;color:var(--green);margin:2px 0;">$${targetPrice.toFixed(2)}</div>
+          <div style="color:var(--green);font-size:6.5px;">+$${favDist.toFixed(1)} pts (${favProb}% conditional prob)</div>
+        </div>
+
+        <!-- Dynamic Adverse Stop -->
+        <div style="background:rgba(0,0,0,0.3);padding:5px 8px;border-radius:4px;border-left:3px solid var(--red);">
+          <div style="color:var(--red);font-weight:800;font-size:7px;">3. DYNAMIC STOP LEVEL (SL)</div>
+          <div style="font-size:12px;font-weight:900;color:var(--red);margin:2px 0;">$${stopPrice.toFixed(2)}</div>
+          <div style="color:var(--red);font-size:6.5px;">-$${advDist.toFixed(1)} pts (MAE structure boundary)</div>
+        </div>
+
+        <!-- Weighted Consensus -->
+        <div style="background:rgba(0,0,0,0.3);padding:5px 8px;border-radius:4px;border-left:3px solid var(--warn);">
+          <div style="color:var(--warn);font-weight:800;font-size:7px;">4. MODEL QUORUM & VOTES</div>
+          <div style="font-size:12px;font-weight:900;color:var(--text);margin:2px 0;">
+            ${weightedAgree.dominantAction || 'HOLD'}
+          </div>
+          <div style="color:var(--muted);font-size:6.5px;">
+            ${weightedAgree.rawBullVotes || 0} Bull / ${weightedAgree.rawBearVotes || 0} Bear (Weighted: ${weightedAgree.agreementPct || 0}%)
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Leaderboard Table Controls & Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;font-size:8px;">
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span style="color:var(--text);font-weight:800;">STRATEGY PERFORMANCE LEADERBOARD (${leaderboard.length} REGISTERED MODELS)</span>
+        <span class="badge" style="background:rgba(245,158,11,0.12);color:var(--warn);font-size:6.5px;padding:1px 5px;">
+          Minimum 30 closed trades required for full score confidence (Bayesian Shrinkage Applied)
+        </span>
+      </div>
+      <div style="display:flex;align-items:center;gap:4px;">
+        <button 
+          onclick="document.getElementById('strategyLeaderboardContainer').scrollBy({left: -220, behavior: 'smooth'})"
+          class="btn-scroll"
+          title="Scroll Left"
+        >
+          ◀ SCROLL
+        </button>
+        <button 
+          onclick="document.getElementById('strategyLeaderboardContainer').scrollBy({left: 220, behavior: 'smooth'})"
+          class="btn-scroll"
+          title="Scroll Right"
+        >
+          SCROLL ▶
+        </button>
+      </div>
+    </div>
+
+    <!-- Scrollable Leaderboard Table -->
+    <div id="strategyLeaderboardContainer" class="compact-table-scroll" style="max-height:360px;border:1px solid rgba(26,48,96,0.6);border-radius:4px;background:rgba(15,23,42,0.85);margin-bottom:8px;">
+      <table style="width:100%;border-collapse:collapse;text-align:left;font-family:JetBrains Mono, monospace;">
+        <thead>
+          <tr style="background:rgba(26,48,96,0.7);color:var(--accent);font-size:8px;font-weight:800;border-bottom:1px solid rgba(0,212,255,0.25);position:sticky;top:0;z-index:3;">
+            <th style="padding:5px 6px;width:75px;">RANK</th>
+            <th style="padding:5px 6px;width:150px;">STRATEGY / MODEL</th>
+            <th style="padding:5px 6px;width:80px;">CATEGORY</th>
+            <th style="padding:5px 6px;width:55px;">TRADES</th>
+            <th style="padding:5px 6px;width:70px;">WIN RATE</th>
+            <th style="padding:5px 6px;width:95px;">NET PNL ($)</th>
+            <th style="padding:5px 6px;width:55px;">PF</th>
+            <th style="padding:5px 6px;width:60px;">MAX DD</th>
+            <th style="padding:5px 6px;width:75px;">RECENT</th>
+            <th style="padding:5px 6px;width:65px;">SCORE</th>
+            <th style="padding:5px 6px;width:70px;">WEIGHT</th>
+            <th style="padding:5px 6px;width:80px;">HEALTH</th>
+            <th style="padding:5px 6px;text-align:right;width:65px;">SIGNAL</th>
+          </tr>
+        </thead>
+        <tbody id="strategyLeaderboardTbody">
+          ${tableRows}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ═══════════════════════════════════════════════════════
 // UNIFIED MASTER QUANT DECISION MATRIX
-// Synthesizes 34-RL + Institutional HJB + Patterns + Regime
+// Synthesizes 34-RL + Institutional HJB + Patterns + Regime + Strategy Performance
 // Prominently placed directly below the Market Price Panel
 // ═══════════════════════════════════════════════════════
 
@@ -3331,94 +3641,47 @@ export function renderMasterDecisionBox() {
   if (!el) return;
 
   const price = parseFloat(STATE.price) || 2600.00;
+  const md = STATE.masterDecision;
 
-  // 1. RL Ensemble Component (Full Dynamic Algorithm Quorum)
-  const totalAlgos = STATE.signals ? Object.keys(STATE.signals).length : (ALGORITHMS.length || 43);
-  const rlScore = clamp(typeof STATE.ensemble === 'number' ? STATE.ensemble : 0, -1, 1);
-  let longVotes = 0;
-  let shortVotes = 0;
-  let flatVotes = 0;
-  if (STATE.signals) {
-    Object.values(STATE.signals).forEach(sig => {
-      const d = sig.direction !== undefined ? sig.direction : (sig.signal > 0.05 ? 1 : sig.signal < -0.05 ? -1 : 0);
-      if (d > 0) longVotes++;
-      else if (d < 0) shortVotes++;
-      else flatVotes++;
-    });
-  }
-  const rlAgreementPct = Math.round((Math.max(longVotes, shortVotes) / Math.max(1, totalAlgos)) * 100);
+  // 1. Authoritative Mastermind Decision values (No presentation-layer decision calculation)
+  const totalAlgos = md?.contributors?.rl43?.activeCount || (STATE.signals ? Object.keys(STATE.signals).length : (ALGORITHMS.length || 43));
+  const rlScore = md?.contributors?.rl43?.score !== undefined ? md.contributors.rl43.score : clamp(typeof STATE.ensemble === 'number' ? STATE.ensemble : 0, -1, 1);
+  const longVotes = md?.contributors?.rl43?.bullVotes || 0;
+  const shortVotes = md?.contributors?.rl43?.bearVotes || 0;
+  const flatVotes = md?.contributors?.rl43?.neutralVotes || 0;
+  const rlAgreementPct = md?.contributors?.rl43?.agreementPct !== undefined ? md.contributors.rl43.agreementPct : 50;
 
-  // 2. Institutional Quant Component (HJB Reservation Price + Hawkes Jump + Kyle's Lambda)
+  // 2. Institutional Quant Component
   const inst = STATE.institutionalAlgo || {};
-  let instScore = 0;
-  if (typeof inst.compositeSignal === 'number') {
-    instScore = clamp(inst.compositeSignal, -1, 1);
-  } else if (typeof inst.signal === 'number') {
-    instScore = clamp(inst.signal, -1, 1);
-  } else if (inst.action === 'BUY') {
-    instScore = 0.65;
-  } else if (inst.action === 'SELL') {
-    instScore = -0.65;
-  }
-  const instAction = inst.action || (instScore > 0.1 ? 'BUY' : instScore < -0.1 ? 'SELL' : 'HOLD');
+  const instScore = md?.contributors?.institutional?.score !== undefined ? md.contributors.institutional.score : 0;
+  const instAction = md?.contributors?.institutional?.action || inst.action || (instScore > 0.1 ? 'BUY' : instScore < -0.1 ? 'SELL' : 'HOLD');
   const instReservationEdge = inst.reservationPrice ? (inst.reservationPrice - price).toFixed(2) : '0.00';
 
   // 3. Candlestick & Multi-Timeframe Patterns Component
   const ca = STATE.candlestickAnalysis || {};
   const mtf = STATE.mtfAnalysis || {};
-  const caScore = clamp(ca.score || 0, -1, 1);
-  const mtfScore = clamp(mtf.confluenceScore || 0, -1, 1);
-  const patternScore = clamp(caScore * 0.6 + mtfScore * 0.4, -1, 1);
   const topPattern = (ca.patterns && ca.patterns[0]?.name) || (ca.dominantPattern) || 'Neutral Price Action';
 
   // 4. Market Regime & ATR Target Dynamics
   const strat = STATE.productionStrategy || {};
-  const regime = strat.regime || (STATE.hmm?.regime) || 'TRENDING';
+  const regime = md?.regime || strat.regime || (STATE.hmm?.regime) || 'TRENDING';
   const atr = parseFloat(strat.atr || STATE.tradeSetup?.atrValue || (STATE.price ? STATE.price * 0.0068 : 15.0)) || 15.0;
 
-  // Composite Synthesis: Dynamic regime-adaptive weighting
-  const ts = STATE.tradeSetup || {};
-  const tsScore = ts.direction !== undefined ? ts.direction * 0.8 : 0;
-  let wRL = 0.35, wInst = 0.35, wPattern = 0.20, wTS = 0.10;
-  if (regime.includes('TREND') || regime.includes('EXPANSION')) {
-    wRL = 0.35; wInst = 0.30; wPattern = 0.25; wTS = 0.10;
-  } else if (regime.includes('MEAN_REVERT') || regime.includes('COMPRESSION')) {
-    wInst = 0.40; wPattern = 0.30; wRL = 0.20; wTS = 0.10;
-  } else if (regime.includes('VOLATILE')) {
-    wRL = 0.40; wInst = 0.35; wPattern = 0.15; wTS = 0.10;
-  }
-  const compositeScore = clamp(
-    (rlScore * wRL) + (instScore * wInst) + (patternScore * wPattern) + (tsScore * wTS),
-    -1, 1
-  );
+  // Mastermind Decision Synthesis
+  const compositeScore = md ? md.score : 0;
+  const confidencePct = md ? Math.round(md.confidence * 100) : 0;
+  const executionApproved = md ? md.approved : false;
 
-  const confidencePct = Math.round(Math.abs(compositeScore) * 100);
-
-  // Dynamic TP & SL derived purely from market movement analysis (ZERO hardcoded multipliers or ratios)
+  // Dynamic TP & SL derived purely from Mastermind analysis (ZERO hardcoded multipliers or ratios)
   const mp = STATE.movementPrediction;
-  const dynMarketMove = mp?.predictedMovement?.mainMove 
-    ? parseFloat(mp.predictedMovement.mainMove) 
-    : (atr > 0 ? atr : (price * 0.005));
-  const dynAdverseMove = mp?.adverseMovement?.expected 
-    ? parseFloat(mp.adverseMovement.expected) 
-    : (atr > 0 ? atr : (price * 0.005));
+  const tpDistance = md?.targetRange?.base ? Math.abs(md.targetRange.base - price) : ((STATE.masterTrade && STATE.masterTrade.tpDistance > 0) ? STATE.masterTrade.tpDistance : atr);
+  const slDistance = md?.stopRange?.riskDistance || ((STATE.masterTrade && STATE.masterTrade.slDistance > 0) ? STATE.masterTrade.slDistance : atr);
 
-  const tpDistance = (STATE.masterTrade && STATE.masterTrade.tpDistance > 0) 
-    ? STATE.masterTrade.tpDistance 
-    : dynMarketMove;
-  const slDistance = (STATE.masterTrade && STATE.masterTrade.slDistance > 0) 
-    ? STATE.masterTrade.slDistance 
-    : dynAdverseMove;
-
-  // Dynamic Kelly Position Sizing based on real portfolio equity & adverse excursion
-  const equity = STATE.equity || 10000;
-  const riskBudgetUSD = equity * 0.015; // 1.5% portfolio risk
-  const dynamicSizeETH = parseFloat(STATE.tradeSetup?.positionETH) ||
-    clamp(Math.round((riskBudgetUSD / Math.max(1, slDistance)) * 100) / 100, 0.15, 3.50);
-
+  // Dynamic Kelly Position Sizing
+  const dynamicSizeETH = md?.risk?.positionSizeETH || parseFloat(STATE.tradeSetup?.positionETH) || 0.10;
   const tpGainUSD = dynamicSizeETH * tpDistance;
   const slLossUSD = dynamicSizeETH * slDistance;
-  const rrRatio = (tpDistance / Math.max(0.1, slDistance)).toFixed(2);
+  const rrRatio = md?.risk?.riskRewardRatio ? md.risk.riskRewardRatio.toFixed(2) : (tpDistance / Math.max(0.1, slDistance)).toFixed(2);
 
   // Master Trade Prediction Lifecycle synchronization
   const mt = STATE.masterTrade || {
@@ -3430,7 +3693,7 @@ export function renderMasterDecisionBox() {
     spPrice: price - slDistance,
     tpDistance: tpDistance,
     slDistance: slDistance,
-    positionETH: 0.50,
+    positionETH: dynamicSizeETH,
     livePnlUSD: '0.00',
     livePnlPct: 0,
     progressPct: 0,
@@ -3438,15 +3701,15 @@ export function renderMasterDecisionBox() {
   };
 
   const isTradeActive = mt.status === 'ACTIVE';
-  const isBuy = isTradeActive ? (mt.direction === 1) : (mt.candidateDirection === 1 && compositeScore >= 0.22);
-  const isSell = isTradeActive ? (mt.direction === -1) : (mt.candidateDirection === -1 && compositeScore <= -0.22);
+  const isBuy = isTradeActive ? (mt.direction === 1) : (md ? md.signal === 'BUY' : false);
+  const isSell = isTradeActive ? (mt.direction === -1) : (md ? md.signal === 'SELL' : false);
 
   let masterVerdict = 'SCANNING';
   let verdictColor = 'var(--warn)';
   let verdictBg = 'rgba(245,158,11,0.14)';
   let verdictBorder = 'var(--warn)';
   let verdictIcon = '🟡';
-  let verdictText = mt.scanReason ? mt.scanReason.toUpperCase() : 'HOLD / AWAITING CONFLUENCE';
+  let verdictText = md?.risk?.rejectionReason || md?.reason || (mt.scanReason ? mt.scanReason.toUpperCase() : 'HOLD / AWAITING MASTERMIND CONFLUENCE');
 
   if (isTradeActive) {
     masterVerdict = isBuy ? 'BUY (LOCKED)' : 'SELL (LOCKED)';
@@ -3471,20 +3734,34 @@ export function renderMasterDecisionBox() {
     verdictBorder = 'var(--red)';
     verdictIcon = '🛑';
     verdictText = `STOP PRICE TRIGGERED · RISK CUT RECORDED (WIN RATE: ${mt.stats?.winRate}%)`;
-  } else if (isBuy) {
-    masterVerdict = 'ARMING BUY';
+  } else if (isBuy && executionApproved) {
+    masterVerdict = 'AUTHORIZED BUY';
     verdictColor = 'var(--green)';
     verdictBg = 'rgba(16,185,129,0.16)';
     verdictBorder = 'var(--green)';
     verdictIcon = '🟢';
-    verdictText = `ARMING LONG OPPORTUNITY (${confidencePct}% Conviction)`;
-  } else if (isSell) {
-    masterVerdict = 'ARMING SELL';
+    verdictText = `MASTERMIND AUTHORIZED LONG (${confidencePct}% Conviction · Kelly: ${dynamicSizeETH} ETH)`;
+  } else if (isSell && executionApproved) {
+    masterVerdict = 'AUTHORIZED SELL';
     verdictColor = 'var(--red)';
     verdictBg = 'rgba(239,68,68,0.16)';
     verdictBorder = 'var(--red)';
     verdictIcon = '🔴';
-    verdictText = `ARMING SHORT OPPORTUNITY (${confidencePct}% Conviction)`;
+    verdictText = `MASTERMIND AUTHORIZED SHORT (${confidencePct}% Conviction · Kelly: ${dynamicSizeETH} ETH)`;
+  } else if (isBuy) {
+    masterVerdict = 'GATEKEEPER BLOCKED';
+    verdictColor = 'var(--warn)';
+    verdictBg = 'rgba(245,158,11,0.14)';
+    verdictBorder = 'var(--warn)';
+    verdictIcon = '🛡️';
+    verdictText = `BULLISH BIAS BUT EXECUTION BLOCKED: ${md?.risk?.rejectionReason || 'Risk check failed'}`;
+  } else if (isSell) {
+    masterVerdict = 'GATEKEEPER BLOCKED';
+    verdictColor = 'var(--warn)';
+    verdictBg = 'rgba(245,158,11,0.14)';
+    verdictBorder = 'var(--warn)';
+    verdictIcon = '🛡️';
+    verdictText = `BEARISH BIAS BUT EXECUTION BLOCKED: ${md?.risk?.rejectionReason || 'Risk check failed'}`;
   }
 
   const entryPrice = isTradeActive ? mt.entryPrice : price;
@@ -3520,13 +3797,13 @@ export function renderMasterDecisionBox() {
     <!-- Header -->
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;border-bottom:1px solid rgba(26,48,96,0.6);padding-bottom:6px;">
       <div style="display:flex;align-items:center;gap:6px;">
-        <span style="font-size:16px;">⚡</span>
+        <span style="font-size:16px;">🧠</span>
         <div>
           <div style="font-size:11px;font-weight:900;color:var(--text);letter-spacing:0.5px;">
-            UNIFIED QUANT DECISION MATRIX
+            UNIFIED MASTERMIND DECISION MATRIX (ETHUSDT)
           </div>
           <div style="font-size:8px;color:var(--muted);">
-            Consolidated: Institutional HJB + ${totalAlgos}-RL Quorum + Patterns + Regime · Dynamic Win Rate: <b style="color:var(--green);">${mt.stats?.winRate}%</b>
+            Sole Authority: 43 RL Quorum + Python 5-Strategy + Institutional HJB + MTF Confluence · Gatekeeper: <b style="color:${executionApproved ? 'var(--green)' : 'var(--warn)'};">${executionApproved ? 'AUTHORIZED' : 'GUARDED / BLOCKED'}</b>
           </div>
         </div>
       </div>
@@ -3546,21 +3823,24 @@ export function renderMasterDecisionBox() {
         <div style="display:flex;align-items:center;gap:8px;">
           <span style="font-size:20px;">${verdictIcon}</span>
           <div>
-            <div style="font-size:13px;font-weight:900;color:${verdictColor};letter-spacing:0.8px;">
-              ${verdictText}
+            <div style="display:flex;align-items:center;gap:6px;">
+              <div style="font-size:13px;font-weight:900;color:${verdictColor};letter-spacing:0.8px;">
+                ${verdictText}
+              </div>
+              <span class="badge" style="background:${executionApproved ? 'rgba(16,185,129,0.2)' : 'rgba(245,158,11,0.2)'};color:${executionApproved ? 'var(--green)' : 'var(--warn)'};border:1px solid ${executionApproved ? 'var(--green)' : 'var(--warn)'};font-size:7.5px;font-weight:800;padding:1px 5px;">
+                ${executionApproved ? 'EXECUTION PERMITTED' : 'EXECUTION BLOCKED'}
+              </span>
             </div>
             <div style="font-size:8px;color:var(--text);margin-top:2px;">
               ${isTradeActive 
                 ? `Trade is ACTIVE and IMMUTABLY LOCKED. Price must hit Target $${tpPrice.toFixed(2)} (TP) or Stop $${slPrice.toFixed(2)} (SP) to resolve.` 
-                : isBuy ? 'Multi-engine bullish consensus verified. Optimal long entry armed.' 
-                : isSell ? 'Multi-engine bearish consensus verified. Optimal short entry armed.' 
-                : 'Market in scanning / range compression. Awaiting volatility trigger to lock prediction.'}
+                : md?.reason || 'Market in scanning / range compression. Awaiting multi-model volatility trigger to authorize execution.'}
             </div>
           </div>
         </div>
         <div style="text-align:right;">
-          <div style="font-size:7.5px;color:var(--muted);font-weight:700;">CONFLUENCE</div>
-          <div style="font-size:15px;font-weight:900;color:${verdictColor};">${compositeScore >= 0 ? '+' : ''}${(compositeScore * 100).toFixed(0)}%</div>
+          <div style="font-size:7.5px;color:var(--muted);font-weight:700;">CONFLUENCE / SCORE</div>
+          <div style="font-size:15px;font-weight:900;color:${verdictColor};">${compositeScore >= 0 ? '+' : ''}${(compositeScore * 100).toFixed(0)}% (${confidencePct}% Conf)</div>
         </div>
       </div>
     </div>
@@ -3673,6 +3953,26 @@ export function renderMasterDecisionBox() {
           <b style="color:var(--accent);margin-left:3px;">${regime} (ATR $${atr.toFixed(2)})</b>
         </div>
       </div>
+      <!-- ⚖️ Dynamic Strategy Performance Attribution -->
+      <div style="margin-top:5px;padding-top:4px;border-top:1px dashed rgba(26,48,96,0.6);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px;font-size:7.5px;">
+        <div>
+          <span style="color:var(--muted);">👑 Best Overall:</span>
+          <b style="color:#f59e0b;margin-left:2px;">${md?.bestOverallStrategy || 'Awaiting trades'}</b>
+        </div>
+        <div>
+          <span style="color:var(--muted);">⚡ Best Recent:</span>
+          <b style="color:var(--accent);margin-left:2px;">${md?.bestRecentStrategy || 'Awaiting trades'}</b>
+        </div>
+        <div>
+          <span style="color:var(--muted);">🌊 Regime Best:</span>
+          <b style="color:var(--green);margin-left:2px;">${md?.bestRegimeStrategy || 'Awaiting trades'}</b>
+        </div>
+        <div>
+          <span style="color:var(--muted);">⚖️ Weighted Agree:</span>
+          <b style="color:var(--text);margin-left:2px;">${md?.agreement !== undefined ? Math.round(md.agreement * 100) : 50}%</b>
+        </div>
+      </div>
+    </div>
     <!-- 🐍 REAL-TIME PYTHON QUANTITATIVE ENGINE (ETHUSDT) -->
     ${(() => {
       const py = STATE.pythonEngine?.decision;
@@ -3800,43 +4100,34 @@ export function renderHeaderMasterSignalArea() {
   if (!el) return;
 
   const price = STATE.price || (STATE.prices && STATE.prices.length > 0 ? STATE.prices[STATE.prices.length - 1] : 0);
-  const totalAlgos = Object.keys(STATE.signals || {}).length || ALGORITHMS.length || 43;
+  const md = STATE.masterDecision;
+  const totalAlgos = md?.contributors?.rl43?.activeCount || (Object.keys(STATE.signals || {}).length || ALGORITHMS.length || 43);
 
-  // 1. Quorum aggregation across all 43 online-adapted algorithms
-  let longVotes = 0, shortVotes = 0, holdVotes = 0;
-  const sigEntries = Object.values(STATE.signals || {});
-  for (let i = 0; i < sigEntries.length; i++) {
-    const s = sigEntries[i]?.signal || 0;
-    if (s > 0.05) longVotes++;
-    else if (s < -0.05) shortVotes++;
-    else holdVotes++;
-  }
-  const rlAgreementPct = totalAlgos > 0 ? Math.round((Math.max(longVotes, shortVotes) / totalAlgos) * 100) : 50;
+  // 1. Quorum aggregation from Mastermind
+  const longVotes = md?.contributors?.rl43?.bullVotes || 0;
+  const shortVotes = md?.contributors?.rl43?.bearVotes || 0;
+  const rlAgreementPct = md?.contributors?.rl43?.agreementPct !== undefined ? md.contributors.rl43.agreementPct : 50;
 
   // 2. Institutional HJB Alpha Engine
   const inst = STATE.institutionalAlgo || {};
-  let instScore = 0;
-  if (typeof inst.compositeSignal === 'number') instScore = clamp(inst.compositeSignal, -1, 1);
-  else if (typeof inst.signal === 'number') instScore = clamp(inst.signal, -1, 1);
-  else if (inst.action === 'BUY') instScore = 0.65;
-  else if (inst.action === 'SELL') instScore = -0.65;
-  const instAction = inst.action || (instScore > 0.1 ? 'BUY' : instScore < -0.1 ? 'SELL' : 'HOLD');
+  const instScore = md?.contributors?.institutional?.score !== undefined ? md.contributors.institutional.score : 0;
+  const instAction = md?.contributors?.institutional?.action || inst.action || (instScore > 0.1 ? 'BUY' : instScore < -0.1 ? 'SELL' : 'HOLD');
 
   // 3. Meta-Labeling & Conformal Bands
   const metaWinProb = STATE.researchStack?.metaLabeling?.winProbability ?? STATE.researchStack?.metaLabeling?.metaWinProb ?? 0.74;
   const conformal = STATE.researchStack?.conformal || { lower: price * 0.992, upper: price * 1.008 };
   const strat = STATE.productionStrategy || {};
-  const regime = strat.regime || 'TRENDING';
+  const regime = md?.regime || strat.regime || 'TRENDING';
 
   // 4. Master Trade Prediction Lifecycle (Single source of truth)
   const headerAtr = parseFloat(strat.atr || STATE.tradeSetup?.atrValue || (price > 0 ? price * 0.0068 : 15.0)) || 15.0;
   const headerMp = STATE.movementPrediction;
-  const headerTpDist = (STATE.masterTrade && STATE.masterTrade.tpDistance > 0) 
+  const headerTpDist = md?.targetRange?.base ? Math.abs(md.targetRange.base - price) : ((STATE.masterTrade && STATE.masterTrade.tpDistance > 0) 
     ? STATE.masterTrade.tpDistance 
-    : (headerMp?.predictedMovement?.mainMove ? parseFloat(headerMp.predictedMovement.mainMove) : headerAtr);
-  const headerSlDist = (STATE.masterTrade && STATE.masterTrade.slDistance > 0) 
+    : (headerMp?.predictedMovement?.mainMove ? parseFloat(headerMp.predictedMovement.mainMove) : headerAtr));
+  const headerSlDist = md?.stopRange?.riskDistance || ((STATE.masterTrade && STATE.masterTrade.slDistance > 0) 
     ? STATE.masterTrade.slDistance 
-    : (headerMp?.adverseMovement?.expected ? parseFloat(headerMp.adverseMovement.expected) : headerAtr);
+    : (headerMp?.adverseMovement?.expected ? parseFloat(headerMp.adverseMovement.expected) : headerAtr));
 
   const mt = STATE.masterTrade || {
     status: 'IDLE',
@@ -3847,7 +4138,7 @@ export function renderHeaderMasterSignalArea() {
     spPrice: price - headerSlDist,
     tpDistance: headerTpDist,
     slDistance: headerSlDist,
-    positionETH: 0.10,
+    positionETH: md?.risk?.positionSizeETH || 0.10,
     livePnlUSD: '0.00',
     livePnlPct: 0,
     progressPct: 0,
@@ -3855,7 +4146,7 @@ export function renderHeaderMasterSignalArea() {
   };
 
   const stats = mt.stats || { totalTrades: 0, wins: 0, losses: 0, winRate: 0.0 };
-  const dynamicSizeETH = parseFloat(mt.positionETH) || 0.10;
+  const dynamicSizeETH = md?.risk?.positionSizeETH || parseFloat(mt.positionETH) || 0.10;
 
   // Sync header history count badge
   const headerCountEl = document.getElementById('masterHistoryCount');
@@ -4094,11 +4385,11 @@ export function renderHeaderMasterSignalArea() {
   el.innerHTML = `
     <!-- Left: Master Scanning Badge & Live Price -->
     <div class="hms-left">
-      <div class="hms-badge" style="background:rgba(245,158,11,0.15);border:1.5px solid var(--warn);">
-        <span class="live-dot" style="background:var(--warn);width:10px;height:10px;margin-right:2px;"></span>
+      <div class="hms-badge" style="background:${md?.approved ? 'rgba(16,185,129,0.18)' : 'rgba(245,158,11,0.15)'};border:1.5px solid ${md?.approved ? 'var(--green)' : 'var(--warn)'};">
+        <span class="live-dot" style="background:${md?.approved ? 'var(--green)' : 'var(--warn)'};width:10px;height:10px;margin-right:2px;"></span>
         <div>
-          <div class="hms-badge-title" style="color:var(--warn);letter-spacing:0.5px;">MASTER SCANNING MARKET</div>
-          <div style="font-size:8px;color:var(--text);font-weight:700;line-height:1.2;">${(mt.scanReason || 'ANALYZING 43 RL + HJB CONFLUENCE TO TRIGGER SETUP').toUpperCase()}</div>
+          <div class="hms-badge-title" style="color:${md?.approved ? 'var(--green)' : 'var(--warn)'};letter-spacing:0.5px;">${md?.approved ? `MASTER AUTHORIZED ${md.signal}` : 'MASTER SCANNING MARKET'}</div>
+          <div style="font-size:8px;color:var(--text);font-weight:700;line-height:1.2;">${(md?.risk?.rejectionReason || md?.reason || mt.scanReason || 'ANALYZING 43 RL + HJB CONFLUENCE TO TRIGGER SETUP').toUpperCase()}</div>
         </div>
       </div>
       <div class="hms-entry-box">

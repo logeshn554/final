@@ -218,6 +218,7 @@ def analyze_structure(df: pd.DataFrame, lookback: int = 5) -> StructureAnalysis:
 
 def compute_structure_features(df: pd.DataFrame) -> pd.DataFrame:
     """Add structure-based features to the DataFrame."""
+    df = df.copy()
     high = df["high"].values
     low = df["low"].values
     close = df["close"].values

@@ -101,6 +101,12 @@ function createState() {
     ensemble: 0,
     ensembleHistory: [],
 
+    // Authoritative Mastermind Canonical Decision
+    masterDecision: null,
+
+    // Dynamic Strategy Performance Engine State
+    strategyPerformance: null,
+
     // Position tracking
     position: 0,          // Current position in ETH
     entryPrice: 0,

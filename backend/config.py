@@ -53,14 +53,14 @@ class AppSettings(BaseSettings):
     symbol: str = "ETHUSDT"
     timeframes: List[str] = ["1m", "5m", "15m", "1h"]
     candle_buffer_size: int = 1000
-    env: str = Field(default="production", env="APP_ENV")
-    host: str = Field(default="0.0.0.0", env="HOST")
-    port: int = Field(default=8000, env="PORT")
-    api_auth_token: Optional[str] = Field(default=None, env="API_AUTH_TOKEN")
+    env: str = Field(default="production", validation_alias="APP_ENV")
+    host: str = Field(default="0.0.0.0", validation_alias="HOST")
+    port: int = Field(default=8000, validation_alias="PORT")
+    api_auth_token: Optional[str] = Field(default=None, validation_alias="API_AUTH_TOKEN")
     cors_origins: List[str] = ["*"]
-    database_path: str = Field(default="trades.db", env="DATABASE_PATH")
-    log_level: str = Field(default="INFO", env="LOG_LEVEL")
-    log_json: bool = Field(default=False, env="LOG_JSON")
+    database_path: str = Field(default="trades.db", validation_alias="DATABASE_PATH")
+    log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
+    log_json: bool = Field(default=False, validation_alias="LOG_JSON")
 
     binance: BinanceSettings = Field(default_factory=BinanceSettings)
     risk: RiskSettings = Field(default_factory=RiskSettings)

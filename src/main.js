@@ -18,6 +18,7 @@ import {
   renderProductionStrategy, renderActiveTradeSignal, renderMovementPrediction, renderAlgoDivergence, renderTrainingAudit,
   renderAlgoWinRateAndFixPanel,
   renderAlgoCapitalBenchmarkPanel,
+  renderStrategyPerformancePanel,
   renderConnectionStatus,
   renderMasterDecisionBox,
   renderHeaderMasterSignalArea,
@@ -58,6 +59,8 @@ import { InstitutionalQuantEngine } from './engine/advanced-institutional.js';
 import { HistoricalTrainer } from './engine/historical-trainer.js';
 import { BinanceLiveStream } from './engine/binance-live.js';
 import { PythonEngineBridge } from './engine/python-engine-bridge.js';
+import { MastermindEngine } from './engine/mastermind.js';
+import { StrategyPerformanceEngine } from './engine/strategy-performance-engine.js';
 
 // ═══════════════════════════════════════════════════════
 // INITIALIZATION
@@ -68,6 +71,16 @@ log('Production RL Engine v1.0 initializing...', 'info');
 // Create all 43 algorithm instances
 const algorithms = createAlgorithms();
 log(`Loaded ${algorithms.length} RL algorithm instances (Original 34 + Research-Grade 35..43)`, 'info');
+
+// Dynamic Strategy Performance Engine (Continuous Paper-Trading Evaluator across all models)
+const strategyPerformanceEngine = new StrategyPerformanceEngine();
+STATE.strategyPerformanceEngine = strategyPerformanceEngine;
+window._strategyPerformanceEngine = strategyPerformanceEngine;
+
+// Central Authoritative Mastermind Engine
+const mastermindEngine = new MastermindEngine();
+STATE.mastermindEngine = mastermindEngine;
+window._mastermindEngine = mastermindEngine;
 
 // Create ensemble & 6-layer quantitative engines
 const ensemble = new EnsembleEngine();
@@ -378,6 +391,15 @@ function tick() {
   const currentDataLayer = STATE.layer1;
   const currentOB = currentDataLayer.orderBook;
 
+  // ── UPDATE DYNAMIC STRATEGY PERFORMANCE ENGINE (Tick & Paper Trades) ──
+  strategyPerformanceEngine.updateMarketData(
+    STATE.price,
+    STATE.spread || 0.15,
+    STATE.high24,
+    STATE.low24,
+    STATE.regime
+  );
+
   // ── MULTI-TIMEFRAME CANDLESTICK ENGINE (1h, 30m, 15m, 3m) ──
   const tickVol = (currentOB.totalBidVol || 20) + (currentOB.totalAskVol || 20);
   const mtfResult = mtfEngine.update(STATE.price, tickVol);
@@ -538,78 +560,6 @@ function tick() {
   const ensSignal = ensemble.update(STATE.signals, actualReturn);
   STATE.ensemble = clamp(alphaLayer.compositeAlpha * 0.70 + ensSignal * 0.30, -1, 1);
 
-  // ── LAYER 3: PORTFOLIO CONSTRUCTION (Mean-Variance, Beta Neutral, TCA hurdle) ──
-  const returnSlice = STATE.prices.slice(-30).map((p, i, a) => i > 0 ? (p / a[i - 1] - 1) : 0);
-  const portfolioLayer = portfolioEngine.optimize(
-    STATE.ensemble,
-    STATE.price,
-    STATE.spread,
-    returnSlice,
-    STATE.position,
-    STATE.equity
-  );
-  STATE.layer3 = portfolioLayer;
-
-  // ── LAYER 5 (Pre-Trade): Risk Gatekeeper ──
-  const preTrade = prodRiskEngine.checkPreTrade(portfolioLayer.targetETH, STATE.price, STATE.equity);
-
-  // ── LAYER 4: SMART EXECUTION (Almgren-Chriss Slicing & Venue SOR) ──
-  let execResult = null;
-  if (preTrade.approved && Math.abs(portfolioLayer.targetETH - STATE.position) >= 0.01) {
-    if (!smartExecEngine.activeOrder) {
-      smartExecEngine.planExecution(portfolioLayer.targetETH, STATE.position, STATE.price, 'ALMGREN_CHRISS');
-    }
-  }
-  execResult = smartExecEngine.executeSlice(
-    STATE.price,
-    STATE.spread,
-    alphaLayer.microstructure.vpin,
-    STATE.layer1.recentTrades || []
-  );
-  STATE.layer4 = {
-    ...smartExecEngine,
-    ...execResult,
-    mode: smartExecEngine.activeOrder ? smartExecEngine.activeOrder.mode : 'ALMGREN_CHRISS',
-    executionLog: smartExecEngine.executionLog,
-  };
-
-  // Update held position from execution slice
-  if (execResult && execResult.sliceETH > 0) {
-    const sign = smartExecEngine.activeOrder
-      ? (smartExecEngine.activeOrder.side === 'BUY' ? 1 : -1)
-      : (portfolioLayer.targetETH > STATE.position ? 1 : -1);
-    STATE.position = clamp(STATE.position + sign * execResult.sliceETH, -5.0, 5.0);
-  }
-
-  // Position mark-to-market tracking
-  liveUpdatePosition();
-
-  // ── LAYER 5 (Post-Trade): Real-Time Risk & Autonomous Kill Switch ──
-  const riskLayer = prodRiskEngine.evaluate(
-    STATE.position,
-    STATE.price,
-    STATE.equity,
-    STATE.maxEquity,
-    returnSlice
-  );
-  STATE.layer5 = riskLayer;
-  if (riskLayer.mustLiquidate && Math.abs(STATE.position) > 0.01) {
-    log(`KILL SWITCH ACTIVATED: ${riskLayer.killSwitchReason} — FLATTENING TO 100% CASH`, 'warn');
-    STATE.position = 0;
-  }
-
-  // ── LAYER 6: ATTRIBUTION, MODEL DRIFT & A/B TESTING ──
-  const totalPnL = (STATE.realizedPnL || 0) + (STATE.unrealizedPnL || 0);
-  const attrLayer = attrEngine.update(
-    STATE.price,
-    prevPrice,
-    STATE.position,
-    totalPnL,
-    execResult,
-    alphaLayer.compositeAlpha
-  );
-  STATE.layer6 = attrLayer;
-
   // ── DYNAMIC MOVEMENT PREDICTION & PREDICTION FEEDBACK LEARNING ──
   const completedSnapshots = movementPredictor.processOutcomes(STATE.price, STATE.prices, STATE.tick);
   if (completedSnapshots && completedSnapshots.length > 0) {
@@ -673,6 +623,229 @@ function tick() {
   STATE.tradeSetup = tradeSignalEngine.evaluateTradeSetup(STATE);
   STATE.trainingAudit = tradeSignalEngine.getTrainingAudit(STATE, capitalBenchmarkEngine);
 
+  // ── DYNAMIC STRATEGY PERFORMANCE EVALUATION BUS ──
+  // Aggregates directional signals across all 43 RL algorithms + quant engines + deep models + Python
+  const allStrategySignals = {};
+  for (const id in STATE.signals) {
+    allStrategySignals[`rl_${id}`] = STATE.signals[id];
+  }
+  allStrategySignals['ensemble_rl'] = {
+    direction: STATE.ensemble > 0.05 ? 1 : STATE.ensemble < -0.05 ? -1 : 0,
+    signal: STATE.ensemble > 0.05 ? 'BUY' : STATE.ensemble < -0.05 ? 'SELL' : 'HOLD',
+    conf: Math.abs(STATE.ensemble || 0.5),
+  };
+  allStrategySignals['alpha_engine'] = {
+    direction: alphaLayer.compositeAlpha > 0.05 ? 1 : alphaLayer.compositeAlpha < -0.05 ? -1 : 0,
+    signal: alphaLayer.compositeAlpha > 0.05 ? 'BUY' : alphaLayer.compositeAlpha < -0.05 ? 'SELL' : 'HOLD',
+    conf: Math.abs(alphaLayer.compositeAlpha || 0.5),
+  };
+  const instSource = instResult || STATE.institutionalAlgo;
+  allStrategySignals['institutional_hjb'] = {
+    direction: instSource?.signal > 0.05 ? 1 : instSource?.signal < -0.05 ? -1 : 0,
+    signal: instSource?.action || 'HOLD',
+    conf: Math.abs(instSource?.signal || 0.6),
+  };
+  allStrategySignals['candlestick_engine'] = {
+    direction: STATE.candlestickAnalysis?.score > 0.05 ? 1 : STATE.candlestickAnalysis?.score < -0.05 ? -1 : 0,
+    signal: STATE.candlestickAnalysis?.score > 0.05 ? 'BUY' : STATE.candlestickAnalysis?.score < -0.05 ? 'SELL' : 'HOLD',
+    conf: Math.abs(STATE.candlestickAnalysis?.score || 0.5),
+  };
+  allStrategySignals['mtf_confluence'] = {
+    direction: STATE.mtfAnalysis?.confluenceScore > 0.05 ? 1 : STATE.mtfAnalysis?.confluenceScore < -0.05 ? -1 : 0,
+    signal: STATE.mtfAnalysis?.confluenceScore > 0.05 ? 'BUY' : STATE.mtfAnalysis?.confluenceScore < -0.05 ? 'SELL' : 'HOLD',
+    conf: Math.abs(STATE.mtfAnalysis?.confluenceScore || 0.5),
+  };
+  allStrategySignals['production_strategy'] = {
+    direction: STATE.productionStrategy?.direction || 0,
+    signal: STATE.productionStrategy?.action || 'HOLD',
+    conf: STATE.productionStrategy?.confidence || 0.5,
+  };
+  allStrategySignals['trade_signal_engine'] = {
+    direction: STATE.tradeSetup?.direction || 0,
+    signal: STATE.tradeSetup?.action || 'HOLD',
+    conf: STATE.tradeSetup?.confidence || 0.5,
+  };
+  allStrategySignals['microstructure_deep'] = {
+    direction: (alphaLayer.microstructure?.obi > 0.1 && alphaLayer.microstructure?.vpin < 0.35) ? 1 : (alphaLayer.microstructure?.obi < -0.1) ? -1 : 0,
+    signal: 'HOLD',
+    conf: 0.6,
+  };
+  allStrategySignals['deep_lob'] = {
+    direction: STATE.researchStack?.deepLOB?.score > 0.05 ? 1 : STATE.researchStack?.deepLOB?.score < -0.05 ? -1 : 0,
+    signal: 'HOLD',
+    conf: Math.abs(STATE.researchStack?.deepLOB?.score || 0.5),
+  };
+  allStrategySignals['neural_forecaster'] = {
+    direction: STATE.researchStack?.neuralForecaster?.score > 0.05 ? 1 : STATE.researchStack?.neuralForecaster?.score < -0.05 ? -1 : 0,
+    signal: 'HOLD',
+    conf: 0.6,
+  };
+  allStrategySignals['foundation_ensemble'] = {
+    direction: STATE.researchStack?.foundation?.score > 0.05 ? 1 : STATE.researchStack?.foundation?.score < -0.05 ? -1 : 0,
+    signal: 'HOLD',
+    conf: 0.6,
+  };
+  allStrategySignals['meta_labeling'] = {
+    direction: STATE.researchStack?.metaLabeling?.winProb > 0.6 ? 1 : STATE.researchStack?.metaLabeling?.winProb < 0.4 ? -1 : 0,
+    signal: 'HOLD',
+    conf: STATE.researchStack?.metaLabeling?.winProb || 0.5,
+  };
+  allStrategySignals['volatility_suite'] = { direction: 0, signal: 'HOLD', conf: 0.5 };
+
+  if (STATE.pythonEngine?.decision) {
+    const pyDec = STATE.pythonEngine.decision;
+    const pyDir = pyDec.signal === 'BUY' ? 1 : pyDec.signal === 'SELL' ? -1 : 0;
+    allStrategySignals['python_ensemble'] = { direction: pyDir, signal: pyDec.signal, conf: pyDec.confidence || 0.6 };
+    const strats = pyDec.strategy_contributions || {};
+    for (const [k, sc] of Object.entries(strats)) {
+      const sd = sc.signal === 'BUY' ? 1 : sc.signal === 'SELL' ? -1 : 0;
+      allStrategySignals[`python_${k}`] = { direction: sd, signal: sc.signal || 'HOLD', conf: sc.confidence || 0.5 };
+    }
+  }
+
+  strategyPerformanceEngine.ingestSignals(allStrategySignals, {
+    price: STATE.price,
+    spread: STATE.spread || 0.15,
+    movementPrediction: movementPrediction,
+    atr: currentATR,
+    regime: currentRegimeStr,
+  });
+
+  const strategyPerformanceState = strategyPerformanceEngine.getState(currentRegimeStr);
+  STATE.strategyPerformance = strategyPerformanceState;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ── AUTHORITATIVE MASTERMIND EVALUATION (ETHUSDT) ──
+  // The Single Master Authority: Ingests Dynamic Strategy Performance
+  // Weights + 43 RL Models + Python 5-Strategy Ensemble + Institutional HJB + Deep Research
+  // ══════════════════════════════════════════════════════════════════════
+  const masterDecision = mastermindEngine.evaluate({
+    price: STATE.price,
+    prices: STATE.prices,
+    signals: STATE.signals,
+    strategyPerformance: strategyPerformanceState,
+    pythonEngineDecision: STATE.pythonEngine?.decision,
+    institutionalAlgo: instResult || STATE.institutionalAlgo,
+    microstructure: alphaLayer.microstructure,
+    candlestickAnalysis: STATE.candlestickAnalysis,
+    mtfAnalysis: STATE.mtfAnalysis,
+    movementPrediction: STATE.movementPrediction,
+    researchStack: STATE.researchStack,
+    autoHealing: STATE.autonomousHealingEngine,
+    equity: STATE.equity,
+    killSwitch: STATE.layer5?.mustLiquidate,
+    atr: currentATR,
+  });
+  STATE.masterDecision = masterDecision;
+
+  // Synchronize Master Trade Execution Lifecycle with Authoritative Decision
+  if (STATE.masterTrade) {
+    if (masterDecision.approved && STATE.masterTrade.status === 'IDLE') {
+      STATE.masterTrade.status = 'ACTIVE';
+      STATE.masterTrade.direction = masterDecision.direction;
+      STATE.masterTrade.action = masterDecision.signal;
+      STATE.masterTrade.entryPrice = STATE.price;
+      STATE.masterTrade.tpPrice = masterDecision.targetRange.base;
+      STATE.masterTrade.spPrice = masterDecision.stopRange.stopPrice;
+      STATE.masterTrade.tpDistance = Math.abs(STATE.masterTrade.tpPrice - STATE.price);
+      STATE.masterTrade.slDistance = masterDecision.stopRange.riskDistance;
+      STATE.masterTrade.positionETH = masterDecision.risk.positionSizeETH;
+      STATE.masterTrade.positionUSD = (masterDecision.risk.positionSizeETH * STATE.price).toFixed(2);
+      STATE.masterTrade.entryTime = Date.now();
+      STATE.masterTrade.entryTimeStr = new Date().toLocaleTimeString();
+      STATE.masterTrade.entryDateStr = new Date().toISOString().slice(0, 10);
+      STATE.masterTrade.boughtTime = masterDecision.direction === 1 ? STATE.masterTrade.entryTimeStr : null;
+      STATE.masterTrade.soldTime = masterDecision.direction === -1 ? STATE.masterTrade.entryTimeStr : null;
+      STATE.masterTrade.elapsedSec = 0;
+      STATE.masterTrade.elapsedStr = '0s';
+      STATE.masterTrade.livePnlUSD = '0.00';
+      STATE.masterTrade.livePnlPct = 0;
+      STATE.masterTrade.progressPct = 0;
+      STATE.masterTrade.scanReason = null;
+    } else if (!masterDecision.approved && STATE.masterTrade.status === 'IDLE') {
+      STATE.masterTrade.action = 'SCANNING';
+      STATE.masterTrade.scanReason = masterDecision.risk?.rejectionReason || masterDecision.reason;
+    }
+  }
+
+  // ── LAYER 3: PORTFOLIO CONSTRUCTION (Mastermind Governs Position Weight) ──
+  const targetETHOverride = (masterDecision.approved && masterDecision.risk?.approved)
+    ? (masterDecision.direction * masterDecision.risk.positionSizeETH)
+    : 0;
+
+  const returnSlice = STATE.prices.slice(-30).map((p, i, a) => i > 0 ? (p / a[i - 1] - 1) : 0);
+  const portfolioLayer = portfolioEngine.optimize(
+    STATE.ensemble,
+    STATE.price,
+    STATE.spread,
+    returnSlice,
+    STATE.position,
+    STATE.equity,
+    targetETHOverride
+  );
+  STATE.layer3 = portfolioLayer;
+
+  // ── LAYER 5 (Pre-Trade): Production Risk Gatekeeper ──
+  const preTrade = prodRiskEngine.checkPreTrade(portfolioLayer.targetETH, STATE.price, STATE.equity);
+
+  // ── LAYER 4: SMART EXECUTION (Strictly Governed by Mastermind + Risk Gate) ──
+  let execResult = null;
+  const executionAuthorized = masterDecision.approved && preTrade.approved;
+  if (executionAuthorized && Math.abs(portfolioLayer.targetETH - STATE.position) >= 0.01) {
+    if (!smartExecEngine.activeOrder) {
+      smartExecEngine.planExecution(portfolioLayer.targetETH, STATE.position, STATE.price, 'ALMGREN_CHRISS');
+    }
+  }
+  execResult = smartExecEngine.executeSlice(
+    STATE.price,
+    STATE.spread,
+    alphaLayer.microstructure.vpin,
+    STATE.layer1.recentTrades || []
+  );
+  STATE.layer4 = {
+    ...smartExecEngine,
+    ...execResult,
+    mode: smartExecEngine.activeOrder ? smartExecEngine.activeOrder.mode : 'ALMGREN_CHRISS',
+    executionLog: smartExecEngine.executionLog,
+  };
+
+  // Update held position from execution slice
+  if (execResult && execResult.sliceETH > 0) {
+    const sign = smartExecEngine.activeOrder
+      ? (smartExecEngine.activeOrder.side === 'BUY' ? 1 : -1)
+      : (portfolioLayer.targetETH > STATE.position ? 1 : -1);
+    STATE.position = clamp(STATE.position + sign * execResult.sliceETH, -5.0, 5.0);
+  }
+
+  // Position mark-to-market tracking
+  liveUpdatePosition();
+
+  // ── LAYER 5 (Post-Trade): Real-Time Risk & Autonomous Kill Switch ──
+  const riskLayer = prodRiskEngine.evaluate(
+    STATE.position,
+    STATE.price,
+    STATE.equity,
+    STATE.maxEquity,
+    returnSlice
+  );
+  STATE.layer5 = riskLayer;
+  if (riskLayer.mustLiquidate && Math.abs(STATE.position) > 0.01) {
+    log(`KILL SWITCH ACTIVATED: ${riskLayer.killSwitchReason} — FLATTENING TO 100% CASH`, 'warn');
+    STATE.position = 0;
+  }
+
+  // ── LAYER 6: ATTRIBUTION, MODEL DRIFT & A/B TESTING ──
+  const totalPnL = (STATE.realizedPnL || 0) + (STATE.unrealizedPnL || 0);
+  const attrLayer = attrEngine.update(
+    STATE.price,
+    prevPrice,
+    STATE.position,
+    totalPnL,
+    execResult,
+    alphaLayer.compositeAlpha
+  );
+  STATE.layer6 = attrLayer;
+
   // 8. Update derived state for UI
   updateDerivedState(features, reward);
 
@@ -724,6 +897,7 @@ function tick() {
     safe(renderAlgoDivergence);
     safe(renderLog);
     safe(renderUptime);
+    safe(renderStrategyPerformancePanel);
     safe(renderAlgoCapitalBenchmarkPanel);
     if (document.getElementById('masterHistoryPage')?.style.display !== 'none') {
       safe(renderMasterHistoryPage);

@@ -33,8 +33,9 @@ class MarketDataProcessor:
             return df
 
         # Add derived columns
-        df["returns"] = df["close"].pct_change()
-        df["log_returns"] = np.log(df["close"] / df["close"].shift(1))
+        df["returns"] = df["close"].pct_change().fillna(0.0)
+        ratio = (df["close"] / df["close"].shift(1).replace(0, np.nan)).clip(lower=1e-8)
+        df["log_returns"] = np.log(ratio).fillna(0.0)
         df["typical_price"] = (df["high"] + df["low"] + df["close"]) / 3.0
         df["hl_range"] = df["high"] - df["low"]
         df["body"] = (df["close"] - df["open"]).abs()

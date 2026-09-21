@@ -46,6 +46,7 @@ def volume_momentum(volume: pd.Series, period: int = 10) -> pd.Series:
 
 def compute_volume_features(df: pd.DataFrame) -> pd.DataFrame:
     """Compute all volume features."""
+    df = df.copy()
     h, l, c, v = df["high"], df["low"], df["close"], df["volume"]
     o = df["open"]
 

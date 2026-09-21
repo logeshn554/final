@@ -35,7 +35,7 @@ export class PortfolioConstructionEngine {
    * @param {Array<number>} returnHistory Return series for covariance estimation
    * @param {number} currentPosition Current held position in ETH
    */
-  optimize(compositeAlpha, currentPrice, spread, returnHistory, currentPosition, equity = 10000) {
+  optimize(compositeAlpha, currentPrice, spread, returnHistory, currentPosition, equity = 10000, overrideTargetETH = null) {
     // Dynamically scale notional and position constraints with current equity and asset price
     if (equity && equity > 0) this.targetNotionalUSD = equity;
     if (currentPrice && currentPrice > 0) {
@@ -59,7 +59,14 @@ export class PortfolioConstructionEngine {
     // w* = alpha / (gamma * sigma^2)
     const rawExpectedReturn = compositeAlpha * 0.0025; // scaled expected return per rebalance
     const optimalRawWeight = rawExpectedReturn / (this.riskAversion * shrunkVar * 1000);
-    const unconstrainedWeight = clamp(optimalRawWeight, -1.0, 1.0);
+    let unconstrainedWeight = clamp(optimalRawWeight, -1.0, 1.0);
+
+    // If Mastermind provides an authoritative target position, align weight
+    let targetPosETH = unconstrainedWeight * this.maxPositionETH;
+    if (overrideTargetETH !== null && typeof overrideTargetETH === 'number') {
+      targetPosETH = clamp(overrideTargetETH, -this.maxPositionETH, this.maxPositionETH);
+      unconstrainedWeight = this.maxPositionETH > 0 ? clamp(targetPosETH / this.maxPositionETH, -1.0, 1.0) : 0;
+    }
 
     // 3. Factor Neutralization
     // If portfolio is unhedged, market beta is beta * weight.
@@ -69,7 +76,6 @@ export class PortfolioConstructionEngine {
     const factorNeutralHedgeRatio = -netBetaExposure;
 
     // 4. Target Position in ETH
-    const targetPosETH = unconstrainedWeight * this.maxPositionETH;
     const deltaTradeETH = Math.abs(targetPosETH - currentPosition);
 
     // 5. Realistic Transaction Cost Model (TCA)

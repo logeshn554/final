@@ -119,65 +119,87 @@ def momentum(close: pd.Series, period: int = 10) -> pd.Series:
 
 def compute_all_technical(df: pd.DataFrame) -> pd.DataFrame:
     """Compute all technical indicators and add as columns."""
+    df = df.copy()
     c, h, l = df["close"], df["high"], df["low"]
+
+    new_cols: dict[str, Any] = {}
 
     # EMAs
     for p in [9, 21, 50, 200]:
-        df[f"ema_{p}"] = ema(c, p)
+        new_cols[f"ema_{p}"] = ema(c, p)
 
     # SMAs
     for p in [20, 50]:
-        df[f"sma_{p}"] = sma(c, p)
+        new_cols[f"sma_{p}"] = sma(c, p)
 
     # MACD
-    df["macd"], df["macd_signal"], df["macd_hist"] = macd(c)
+    m_line, m_sig, m_hist = macd(c)
+    new_cols["macd"] = m_line
+    new_cols["macd_signal"] = m_sig
+    new_cols["macd_hist"] = m_hist
 
     # RSI
-    df["rsi"] = rsi(c, 14)
-    df["rsi_6"] = rsi(c, 6)
+    new_cols["rsi"] = rsi(c, 14)
+    new_cols["rsi_6"] = rsi(c, 6)
 
     # ADX
-    df["adx"], df["plus_di"], df["minus_di"] = adx(h, l, c, 14)
+    adx_v, p_di, m_di = adx(h, l, c, 14)
+    new_cols["adx"] = adx_v
+    new_cols["plus_di"] = p_di
+    new_cols["minus_di"] = m_di
 
     # ROC
-    df["roc_10"] = roc(c, 10)
-    df["roc_5"] = roc(c, 5)
+    new_cols["roc_10"] = roc(c, 10)
+    new_cols["roc_5"] = roc(c, 5)
 
     # Stochastic
-    df["stoch_k"], df["stoch_d"] = stochastic(h, l, c)
+    st_k, st_d = stochastic(h, l, c)
+    new_cols["stoch_k"] = st_k
+    new_cols["stoch_d"] = st_d
 
     # CCI
-    df["cci"] = cci(h, l, c, 20)
+    new_cols["cci"] = cci(h, l, c, 20)
 
     # Williams %R
-    df["williams_r"] = williams_r(h, l, c)
+    new_cols["williams_r"] = williams_r(h, l, c)
 
     # Momentum
-    df["momentum_10"] = momentum(c, 10)
-    df["momentum_5"] = momentum(c, 5)
+    new_cols["momentum_10"] = momentum(c, 10)
+    new_cols["momentum_5"] = momentum(c, 5)
 
     # EMA structure
-    df["ema_9_21_cross"] = (df["ema_9"] - df["ema_21"]).apply(np.sign)
-    df["ema_21_50_cross"] = (df["ema_21"] - df["ema_50"]).apply(np.sign)
-    df["ema_alignment"] = (
-        (df["ema_9"] > df["ema_21"]).astype(int)
-        + (df["ema_21"] > df["ema_50"]).astype(int)
-        + (df["ema_50"] > df["ema_200"]).astype(int)
+    ema_9 = new_cols["ema_9"]
+    ema_21 = new_cols["ema_21"]
+    ema_50 = new_cols["ema_50"]
+    ema_200 = new_cols["ema_200"]
+
+    new_cols["ema_9_21_cross"] = (ema_9 - ema_21).apply(np.sign)
+    new_cols["ema_21_50_cross"] = (ema_21 - ema_50).apply(np.sign)
+    new_cols["ema_alignment"] = (
+        (ema_9 > ema_21).astype(int)
+        + (ema_21 > ema_50).astype(int)
+        + (ema_50 > ema_200).astype(int)
     ) / 3.0  # 1.0 = perfect bull alignment, 0.0 = perfect bear
 
     # Trend persistence: how many bars in a row the close > ema_21
-    above_ema = (c > df["ema_21"]).astype(int)
+    above_ema = (c > ema_21).astype(int)
     persistence = above_ema.copy()
     for i in range(1, len(persistence)):
         if persistence.iloc[i] == 1:
             persistence.iloc[i] = persistence.iloc[i - 1] + 1
         else:
             persistence.iloc[i] = 0
+    new_cols["trend_persistence"] = persistence
+
     # Standardized column aliases for strategies and ML models
-    df["rsi_14"] = df["rsi"]
-    df["adx_14"] = df["adx"]
-    df["plus_di_14"] = df["plus_di"]
-    df["minus_di_14"] = df["minus_di"]
+    new_cols["rsi_14"] = new_cols["rsi"]
+    new_cols["adx_14"] = new_cols["adx"]
+    new_cols["plus_di_14"] = new_cols["plus_di"]
+    new_cols["minus_di_14"] = new_cols["minus_di"]
+
+    # Assign all generated indicators
+    for col_name, col_data in new_cols.items():
+        df[col_name] = col_data
 
     return df
 

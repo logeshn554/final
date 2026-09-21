@@ -52,48 +52,61 @@ def hurst_exponent_proxy(close: pd.Series, max_lag: int = 20) -> float:
         return 0.5
 
     try:
-        with np.errstate(all='ignore'):
-            lags = range(4, max_lag + 1)
-            rs_values = []
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            with np.errstate(all='ignore'):
+                lags = range(4, max_lag + 1)
+                rs_values = []
 
-            for lag in lags:
-                n = len(values) // lag
-                if n < 2:
-                    continue
-                rs_list = []
-                for i in range(n):
-                    segment = values[i * lag : (i + 1) * lag]
-                    if len(segment) < 4:
+                for lag in lags:
+                    n = len(values) // lag
+                    if n < 2:
                         continue
-                    denom = np.where(segment[:-1] != 0, segment[:-1], 1e-8)
-                    returns = np.diff(segment) / denom
-                    if len(returns) < 3:
-                        continue
-                    mean_ret = np.mean(returns)
-                    deviations = np.cumsum(returns - mean_ret)
-                    r = np.max(deviations) - np.min(deviations)
-                    s = np.std(returns, ddof=1)
-                    if s > 1e-8 and r > 0:
-                        rs_list.append(r / s)
-                if rs_list:
-                    mean_rs = float(np.mean(rs_list))
-                    if mean_rs > 1e-8:
-                        rs_values.append((lag, mean_rs))
+                    rs_list = []
+                    for i in range(n):
+                        segment = values[i * lag : (i + 1) * lag]
+                        if len(segment) < 6:
+                            continue
+                        denom = np.where(np.abs(segment[:-1]) > 1e-8, segment[:-1], 1e-8)
+                        returns = np.diff(segment) / denom
+                        if len(returns) < 5:
+                            continue
 
-            if len(rs_values) < 3:
-                return 0.5
+                        # Guard against degrees of freedom <= 0 and zero variance
+                        var = float(np.var(returns, ddof=1)) if len(returns) > 1 else 0.0
+                        if var <= 1e-12 or np.isnan(var):
+                            continue
+                        s = float(np.sqrt(var))
 
-            log_lags = np.log([v[0] for v in rs_values])
-            log_rs = np.log([max(v[1], 1e-8) for v in rs_values])
+                        mean_ret = float(np.mean(returns))
+                        deviations = np.cumsum(returns - mean_ret)
+                        r = float(np.max(deviations) - np.min(deviations))
 
-            slope = np.polyfit(log_lags, log_rs, 1)[0]
-            return float(np.clip(slope, 0.0, 1.0))
+                        if s > 1e-8 and r > 1e-8 and not np.isnan(r) and not np.isnan(s):
+                            rs_list.append(r / s)
+
+                    if rs_list:
+                        mean_rs = float(np.mean(rs_list))
+                        if mean_rs > 1e-8 and not np.isnan(mean_rs):
+                            rs_values.append((float(lag), mean_rs))
+
+                if len(rs_values) < 3:
+                    return 0.5
+
+                log_lags = np.log(np.maximum([v[0] for v in rs_values], 1.0))
+                log_rs = np.log(np.maximum([v[1] for v in rs_values], 1e-8))
+
+                slope = np.polyfit(log_lags, log_rs, 1)[0]
+                if np.isnan(slope) or np.isinf(slope):
+                    return 0.5
+                return float(np.clip(slope, 0.0, 1.0))
     except Exception:
         return 0.5
 
 
 def compute_statistical_features(df: pd.DataFrame) -> pd.DataFrame:
     """Compute all statistical features."""
+    df = df.copy()
     c = df["close"]
 
     df["z_score_20"] = z_score(c, 20)

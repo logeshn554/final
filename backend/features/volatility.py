@@ -19,22 +19,24 @@ def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> 
 
 def realized_volatility(close: pd.Series, period: int = 20) -> pd.Series:
     """Realized volatility from log returns (annualized)."""
-    log_ret = np.log(close / close.shift(1))
-    return log_ret.rolling(period).std() * np.sqrt(365 * 24 * 60)  # ~minute-level annualization
+    ratio = (close / close.shift(1).replace(0, np.nan)).clip(lower=1e-8)
+    log_ret = np.log(ratio).fillna(0.0)
+    return log_ret.rolling(period, min_periods=2).std().fillna(0.0) * np.sqrt(365 * 24 * 60)  # ~minute-level annualization
 
 
 def rolling_volatility(close: pd.Series, periods: list[int] = None) -> dict[str, pd.Series]:
     """Rolling volatility at multiple windows."""
     if periods is None:
         periods = [10, 20, 50]
-    log_ret = np.log(close / close.shift(1))
-    return {f"vol_{p}": log_ret.rolling(p).std() for p in periods}
+    ratio = (close / close.shift(1).replace(0, np.nan)).clip(lower=1e-8)
+    log_ret = np.log(ratio).fillna(0.0)
+    return {f"vol_{p}": log_ret.rolling(p, min_periods=2).std().fillna(0.0) for p in periods}
 
 
 def parkinson_volatility(high: pd.Series, low: pd.Series, period: int = 20) -> pd.Series:
     """Parkinson high-low volatility estimator (more efficient than close-close)."""
-    hl_ratio = np.log(high / low.replace(0, 1e-10))
-    return np.sqrt(hl_ratio.pow(2).rolling(period).mean() / (4.0 * np.log(2)))
+    hl_ratio = np.maximum(high / low.replace(0, 1e-10), 1e-8)
+    return np.sqrt(np.log(hl_ratio).pow(2).rolling(period, min_periods=2).mean().fillna(0.0) / (4.0 * np.log(2)))
 
 
 def vol_expansion_ratio(atr_series: pd.Series, slow: int = 50, fast: int = 10) -> pd.Series:
@@ -60,7 +62,7 @@ def historical_move_distribution(
         future_ret = close[i + forward_bars] - close[i]
         moves.append(future_ret)
 
-    if not moves:
+    if not moves or len(moves) < 2:
         return {"p10": 0, "p25": 0, "p50": 0, "p75": 0, "p90": 0, "mean": 0, "std": 0}
 
     moves = np.array(moves)
@@ -71,7 +73,7 @@ def historical_move_distribution(
         "p75": float(np.percentile(moves, 75)),
         "p90": float(np.percentile(moves, 90)),
         "mean": float(np.mean(moves)),
-        "std": float(np.std(moves)),
+        "std": float(np.std(moves)) if len(moves) > 1 else 0.0,
     }
 
 
@@ -87,6 +89,7 @@ def candle_range_percentile(
 
 def compute_volatility_features(df: pd.DataFrame) -> pd.DataFrame:
     """Compute all volatility features and add as columns."""
+    df = df.copy()
     h, l, c = df["high"], df["low"], df["close"]
 
     df["atr_14"] = atr(h, l, c, 14)

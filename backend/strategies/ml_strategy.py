@@ -75,7 +75,7 @@ class MLStrategy(BaseStrategy):
         """Train classifier and regressor on available features."""
         try:
             X, y_dir, y_mag = self._prepare_training_data(df)
-            if len(X) < self.min_train_samples:
+            if len(X) < self.min_train_samples or len(np.unique(y_dir)) < 2:
                 return
 
             try:

@@ -99,16 +99,16 @@ class TimeframeBuffer:
 
     @property
     def df(self) -> pd.DataFrame:
-        """Efficient DataFrame view with caching."""
+        """Efficient DataFrame view with caching. Always returns a copy so callers cannot corrupt the buffer."""
         with self._lock:
             if self._df_cache is not None and self._cache_len == len(self._candles):
-                return self._df_cache
+                return self._df_cache.copy()
             if not self._candles:
                 self._df_cache = pd.DataFrame(
                     columns=["timestamp", "open", "high", "low", "close", "volume", "trades"]
                 )
                 self._cache_len = 0
-                return self._df_cache
+                return self._df_cache.copy()
             data = {
                 "timestamp": [c.timestamp for c in self._candles],
                 "open": [c.open for c in self._candles],
@@ -120,7 +120,7 @@ class TimeframeBuffer:
             }
             self._df_cache = pd.DataFrame(data)
             self._cache_len = len(self._candles)
-            return self._df_cache
+            return self._df_cache.copy()
 
     @property
     def closes(self) -> np.ndarray:
