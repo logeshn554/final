@@ -23,7 +23,19 @@ import {
   MultiObjectiveRLAlgo, SafeRLAlgo, TransformerRLAlgo,
 } from './advanced.js';
 
-/** Create all 34 algorithm instances */
+import {
+  QRDQNAlgo, IQNAlgo, FQFAlgo,
+} from './distributional-rl.js';
+
+import {
+  IQLAlgo, GenuineCQLAlgo, DecisionTransformerAlgo, TDMPC2Algo,
+} from './offline-sequence-rl.js';
+
+import {
+  CPOLagrangianAlgo, OptionCriticHierarchicalAlgo,
+} from './safe-hierarchical-rl.js';
+
+/** Create all algorithm instances (original 34 + research-grade upgrades 35..43) */
 export function createAlgorithms() {
   return [
     new MarkovChainAlgo(),        // 1
@@ -60,5 +72,16 @@ export function createAlgorithms() {
     new MultiObjectiveRLAlgo(),   // 32
     new SafeRLAlgo(),             // 33
     new TransformerRLAlgo(),      // 34
+    // ── Research-Grade Deep RL Upgrades ──
+    new QRDQNAlgo(),              // 35
+    new IQNAlgo(),                // 36
+    new FQFAlgo(),                // 37
+    new IQLAlgo(),                // 38
+    new GenuineCQLAlgo(),         // 39
+    new DecisionTransformerAlgo(),// 40
+    new TDMPC2Algo(),             // 41
+    new CPOLagrangianAlgo(),      // 42
+    new OptionCriticHierarchicalAlgo(), // 43
   ];
 }
+

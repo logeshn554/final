@@ -305,8 +305,13 @@ export class InstitutionalQuantEngine {
       activeRegime = 'KYLE INFORMED FLOW EXPLOIT';
     }
 
+    const roundedSignal = Math.round(masterSignal * 1000) / 1000;
+    const action = roundedSignal >= 0.12 ? 'BUY' : roundedSignal <= -0.12 ? 'SELL' : 'HOLD';
+
     this.output = {
-      signal: Math.round(masterSignal * 1000) / 1000,
+      signal: roundedSignal,
+      compositeSignal: roundedSignal,
+      action,
       confidence: 0.94,
       regime: activeRegime,
       // Avellaneda-Stoikov
@@ -360,6 +365,8 @@ export class InstitutionalQuantEngine {
     const curP = parseFloat(price) || 0;
     return {
       signal: 0,
+      compositeSignal: 0,
+      action: 'HOLD',
       confidence: 0,
       regime: 'AWAITING_EXCHANGE_FEED',
       avellaneda: {

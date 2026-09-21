@@ -50,7 +50,7 @@ export class MultiTimeframeEngine {
       '1m': { score: 0, trend: 'FLAT', patterns: [] },
     };
 
-    const initialP = (typeof STATE !== 'undefined' && STATE.price) ? STATE.price : 2608.00;
+    const initialP = (typeof STATE !== 'undefined' && (STATE.price || (STATE.prices && STATE.prices.length > 0 ? STATE.prices[STATE.prices.length - 1] : 0))) || 2500.00;
     this.initHistoricalCandles(initialP);
   }
 
@@ -72,10 +72,10 @@ export class MultiTimeframeEngine {
   /**
    * Seed realistic initial historical candles across all 4 timeframes
    */
-  initHistoricalCandles(currentPrice = ((typeof STATE !== 'undefined' && STATE.price) ? STATE.price : 2608.00)) {
+  initHistoricalCandles(currentPrice = ((typeof STATE !== 'undefined' && (STATE.price || (STATE.prices && STATE.prices.length > 0 ? STATE.prices[STATE.prices.length - 1] : 0))) || 2500.00)) {
     const counts = { '1m': 60, '3m': 60, '15m': 60, '30m': 60, '1h': 60 };
     const now = Date.now();
-    const baseP = parseFloat(currentPrice) || 2608.00;
+    const baseP = parseFloat(currentPrice) || 2500.00;
 
     for (const tf of TIMEFRAMES) {
       let p = baseP - (Math.random() - 0.5) * (baseP * 0.008);

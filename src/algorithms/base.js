@@ -42,8 +42,18 @@ export class BaseAlgorithm {
 
   /**
    * Get current signal result (called by ensemble)
+   * @param {Float64Array} [features] Optional features to evaluate dynamic policy
    */
-  getSignal() {
+  getSignal(features = null) {
+    if (features && typeof this.predict === 'function') {
+      try {
+        const pred = this.predict(features);
+        if (pred && typeof pred.signal === 'number') {
+          this.signal = pred.signal;
+          if (typeof pred.confidence === 'number') this.confidence = pred.confidence;
+        }
+      } catch (e) {}
+    }
     return {
       signal: clamp(this.signal, -1, 1),
       conf: clamp(this.confidence, 0, 1),

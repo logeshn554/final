@@ -469,6 +469,96 @@ export const ALGO_PROFILES = {
       return { up, down };
     },
   },
+  35: {
+    // QR-DQN
+    horizon: 'Distributional Scalp (3–10m)',
+    basis: 'QR-DQN 51-Quantile Expectile Envelope',
+    calc: (price, atr, s, conf, metrics) => {
+      const up = Math.max(4.8, +(atr * (0.85 + conf * 0.62 + (s > 0 ? s * 0.42 : 0))).toFixed(1));
+      const down = Math.max(2.4, +(atr * (0.42 + (1 - conf) * 0.38)).toFixed(1));
+      return { up, down };
+    },
+  },
+  36: {
+    // IQN
+    horizon: 'Continuous Quantile (5–20m)',
+    basis: 'Implicit Quantile Network Risk Distortion',
+    calc: (price, atr, s, conf, metrics) => {
+      const up = Math.max(5.2, +(atr * (0.92 + conf * 0.68 + (s > 0 ? s * 0.48 : 0))).toFixed(1));
+      const down = Math.max(2.6, +(atr * (0.44 + (1 - conf) * 0.4)).toFixed(1));
+      return { up, down };
+    },
+  },
+  37: {
+    // FQF
+    horizon: 'Fraction Quantile (10–30m)',
+    basis: 'Fraction Proposal Network Adaptive Split',
+    calc: (price, atr, s, conf, metrics) => {
+      const up = Math.max(5.5, +(atr * (0.96 + conf * 0.72 + (s > 0 ? s * 0.52 : 0))).toFixed(1));
+      const down = Math.max(2.8, +(atr * (0.46 + (1 - conf) * 0.42)).toFixed(1));
+      return { up, down };
+    },
+  },
+  38: {
+    // IQL
+    horizon: 'Offline Expectile (15–45m)',
+    basis: 'In-Sample Asymmetric Expectile Loss',
+    calc: (price, atr, s, conf, metrics) => {
+      const up = Math.max(5.8, +(atr * (1.02 + conf * 0.75 + (s > 0 ? s * 0.55 : 0))).toFixed(1));
+      const down = Math.max(2.9, +(atr * (0.48 + (1 - conf) * 0.44)).toFixed(1));
+      return { up, down };
+    },
+  },
+  39: {
+    // CQL
+    horizon: 'Conservative Offline (20–60m)',
+    basis: 'OOD Log-Sum-Exp Conservative Penalty',
+    calc: (price, atr, s, conf, metrics) => {
+      const up = Math.max(5.6, +(atr * (0.98 + conf * 0.7 + (s > 0 ? s * 0.5 : 0))).toFixed(1));
+      const down = Math.max(2.5, +(atr * (0.38 + (1 - conf) * 0.36)).toFixed(1));
+      return { up, down };
+    },
+  },
+  40: {
+    // Decision Transformer
+    horizon: 'Causal Transformer (15–60m)',
+    basis: 'Autoregressive Return-to-Go Prompt Conditioning',
+    calc: (price, atr, s, conf, metrics) => {
+      const up = Math.max(6.4, +(atr * (1.15 + conf * 0.82 + (s > 0 ? s * 0.62 : 0))).toFixed(1));
+      const down = Math.max(3.1, +(atr * (0.52 + (1 - conf) * 0.44)).toFixed(1));
+      return { up, down };
+    },
+  },
+  41: {
+    // TD-MPC2
+    horizon: 'Latent MPC (10–30m)',
+    basis: 'Model-Predictive Path Integral Rollouts',
+    calc: (price, atr, s, conf, metrics) => {
+      const up = Math.max(6.0, +(atr * (1.08 + conf * 0.78 + (s > 0 ? s * 0.58 : 0))).toFixed(1));
+      const down = Math.max(2.8, +(atr * (0.46 + (1 - conf) * 0.4)).toFixed(1));
+      return { up, down };
+    },
+  },
+  42: {
+    // CPO Lagrangian
+    horizon: 'Safe Constrained (15–45m)',
+    basis: 'Dual Cost Constraint Safe Boundary',
+    calc: (price, atr, s, conf, metrics) => {
+      const up = Math.max(4.6, +(atr * (0.82 + conf * 0.6 + (s > 0 ? s * 0.4 : 0))).toFixed(1));
+      const down = Math.max(2.2, +(atr * (0.32 + (1 - conf) * 0.32)).toFixed(1));
+      return { up, down };
+    },
+  },
+  43: {
+    // Option-Critic
+    horizon: 'Hierarchical Options (30–90m)',
+    basis: 'Intra-Option Policy & Termination Probability β',
+    calc: (price, atr, s, conf, metrics) => {
+      const up = Math.max(6.8, +(atr * (1.24 + conf * 0.88 + (s > 0 ? s * 0.68 : 0))).toFixed(1));
+      const down = Math.max(3.3, +(atr * (0.55 + (1 - conf) * 0.46)).toFixed(1));
+      return { up, down };
+    },
+  },
 };
 
 export class AlgoDiagnosticsEngine {

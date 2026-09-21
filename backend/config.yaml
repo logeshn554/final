@@ -1,0 +1,55 @@
+symbol: ETHUSDT
+timeframes: ["1m", "5m", "15m", "1h"]
+candle_buffer_size: 1000
+
+binance:
+  rest_urls:
+    - "https://data-api.binance.vision"
+    - "https://api.binance.com"
+    - "https://api1.binance.com"
+    - "https://api2.binance.com"
+  ws_urls:
+    - "wss://stream.binance.com:443/ws"
+    - "wss://stream.binance.com:9443/ws"
+    - "wss://data-stream.binance.vision/ws"
+  request_timeout: 10
+  max_retries: 4
+  rate_limit_pause: 0.25
+
+engine:
+  tick_interval_seconds: 3
+  min_candles_required: 60
+  warm_up_candles: 300
+
+risk:
+  max_portfolio_risk_pct: 2.0
+  max_position_pct: 15.0
+  max_daily_loss_pct: 4.0
+  max_drawdown_pct: 12.0
+  max_concurrent_positions: 1
+  kelly_fraction_cap: 0.25
+  fee_pct: 0.04
+  slippage_ticks: 1
+
+backtest:
+  train_window: 5000
+  validation_window: 1000
+  step_size: 500
+  fee_pct: 0.04
+  slippage_pct: 0.01
+  latency_ms: 100
+
+ml:
+  retrain_interval_trades: 30
+  min_training_samples: 80
+  forward_bars: 5
+
+database:
+  path: "trades.db"
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+
+logging:
+  level: "INFO"

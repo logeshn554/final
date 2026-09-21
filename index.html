@@ -3,29 +3,50 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <meta name="description" content="Live-market research and algorithmic paper-trading platform for ETH/USDT with 34 online RL algorithms, real-time Binance/Coinbase market data, dynamic movement prediction, and autonomous self-healing."/>
-  <title>ETH/USDT · Live-Market Research & Paper-Trading Platform · 34-RL Online Engine</title>
+  <meta name="description" content="Live-market research and algorithmic paper-trading platform for ETH/USDT with 43 online RL algorithms, real-time Binance/Coinbase market data, dynamic movement prediction, and autonomous self-healing."/>
+  <title>ETH/USDT · Live-Market Research & Paper-Trading Platform · 43-RL Online Engine</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link rel="preconnect" href="https://fonts.gstatic.com"/>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="/src/styles/main.css"/>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;⬡&lt;/text&gt;&lt;/svg&gt;"/>
 </head>
+
 <body>
 
   <!-- Header -->
   <header class="header" id="header">
-    <div class="header-left">
-      <div class="logo">⬡ ETH/USDT</div>
-      <span class="logo-sub">LIVE RESEARCH & PAPER TRADING</span>
+    <div class="header-top-bar">
+      <div class="header-left">
+        <div class="logo">⬡ ETH/USDT</div>
+        <span class="logo-sub">LIVE RESEARCH & PAPER TRADING</span>
+      </div>
+      <div class="header-right">
+        <button class="btn-header" id="btnMasterHistory" onclick="window._toggleMasterHistoryPage()" style="background:rgba(0,212,255,0.14);border:1.5px solid var(--accent);color:var(--accent);font-weight:800;" title="View all completed master predictions with TP/SP success and failure audit">
+          📜 MASTER HISTORY (<span id="masterHistoryCount">0</span>)
+        </button>
+        <button class="btn-header" id="btnPaperTradingArena" onclick="window._showPaperTradingArena()" style="background:rgba(16,185,129,0.14);border:1.5px solid var(--green);color:var(--green);font-weight:800;" title="View 43-Algorithm $10 Capital Paper Trading Arena">
+          🎮 43-ALGO PAPER TRADING
+        </button>
+        <div class="auto-train-badge" id="autoTrainBadge" onclick="window._start6MonthTraining()" style="cursor:pointer;" title="Click to execute 6-month multi-timeframe training across all 43 algorithms"><span class="live-dot" style="background:var(--green);"></span>● 43-RL MODELS · 6-MO REAL DATA + LIVE ONLINE LEARNING</div>
+        <div class="prod-badge" id="pythonEngineBadge" onclick="window._switchLayer('python-quant')" style="border:1px solid rgba(0,212,255,0.4);background:rgba(0,212,255,0.08);color:var(--accent);cursor:pointer;" title="Click to view Python Quantitative Engine dashboard (FastAPI on localhost:8000)">
+          <span class="live-dot" id="pythonEngineDot" style="background:var(--warn);"></span>
+          <span id="pythonEngineStatus">PYTHON QUANT: CONNECTING...</span>
+        </div>
+        <button class="btn-header" id="btnLiveToggle" onclick="window._toggleLiveStream()">🟡 CONNECTING...</button>
+        <span class="header-meta">43-ALGO ENSEMBLE</span>
+        <div class="live-badge" id="liveBadge"><div class="live-dot dot-yellow"></div>CONNECTING...</div>
+      </div>
     </div>
-    <div class="header-right">
-      <div class="auto-train-badge" id="autoTrainBadge"><span class="live-dot" style="background:var(--green);"></span>● 34-RL ONLINE ALGORITHMS · REAL DATA</div>
-      <div class="prod-badge"><span class="live-dot" style="background:var(--accent);"></span>RIG-MICRO PAPER ENGINE · REAL L2 BOOK</div>
-      <button class="btn-header" id="btnLiveToggle" onclick="window._toggleLiveStream()">🟡 CONNECTING...</button>
-      <span class="header-meta">34-ALGO ENSEMBLE</span>
-      <div class="live-badge" id="liveBadge"><div class="live-dot dot-yellow"></div>CONNECTING...</div>
+
+    <!-- ⚡ SEPARATE AREA OF HEADER: UNIFIED QUANT SIGNAL (BUY / SELL / HOLD with TP & SP) ⚡ -->
+    <div class="header-master-signal-area" id="headerMasterSignalArea">
+      <!-- Dynamically populated each tick by renderHeaderMasterSignalArea() -->
     </div>
   </header>
+
+  <!-- 📜 Dedicated Full Page Master Trade History View (Opened on History Click) -->
+  <div id="masterHistoryPage" class="master-history-page" style="display:none;"></div>
 
   <!-- 6-Layer Architecture Navigation Bar -->
   <nav class="layer-nav" id="layerNav">
@@ -33,11 +54,12 @@
       <span class="layer-nav-label">QUANT PIPELINE:</span>
       <button class="layer-tab active" data-layer="overview">⚡ 6-LAYER OVERVIEW</button>
       <button class="layer-tab" data-layer="l1">L1 DATA INGESTION</button>
-      <button class="layer-tab" data-layer="l2">L2 ALPHA & 34 RL</button>
+      <button class="layer-tab" data-layer="l2">L2 ALPHA & RL ENSEMBLE</button>
       <button class="layer-tab" data-layer="l3">L3 PORTFOLIO</button>
       <button class="layer-tab" data-layer="l4">L4 EXECUTION</button>
       <button class="layer-tab" data-layer="l5">L5 RISK</button>
       <button class="layer-tab" data-layer="l6">L6 ATTRIBUTION</button>
+      <button class="layer-tab" data-layer="python-quant" style="background:rgba(0,212,255,0.12);border:1px solid rgba(0,212,255,0.45);color:var(--accent);font-weight:800;" title="Real-Time Python 5-Strategy Ensemble Quantitative Engine">🐍 PYTHON QUANT ENGINE</button>
     </div>
   </nav>
 
@@ -143,6 +165,9 @@
       <!-- Active Trade Signal & Risk Orders (Stop Loss · Take Profit) -->
       <section class="panel panel-accent" id="activeTradeSignalPanel"></section>
 
+      <!-- 🎮 43-Algorithm $10 Capital Paper Trading Arena -->
+      <section class="panel panel-accent" id="algoCapitalBenchmarkPanel"></section>
+
       <!-- Dynamic Market Movement Prediction Engine (HOW FAR Price Can Move · Probabilistic Distribution) -->
       <section class="panel panel-accent" id="movementPredictionPanel"></section>
 
@@ -179,8 +204,12 @@
       <!-- The Pinnacle Quant Algorithm Suite (Avellaneda-Stoikov HJB + Hawkes & Kyle's Lambda) -->
       <section class="panel panel-accent" id="institutionalAlgoPanel"></section>
 
+      <!-- Complete Research-Grade Quantitative + Deep AI/RL Algorithm Stack -->
+      <section class="panel panel-accent" id="researchStackPanel"></section>
+
       <!-- Algorithm Divergence & Explainability Engine -->
       <section class="panel panel-accent" id="algoDivergencePanel"></section>
+
 
       <!-- Algorithm Signal Matrix -->
       <section class="panel" id="algoPanel">
@@ -289,7 +318,7 @@
     <div class="status-item"><span>ENGINE:</span><span class="status-ok" id="engineStatus">ONLINE</span></div>
     <div class="status-item"><span>FEED:</span><span class="status-ok" id="feedProvider">CONNECTING...</span></div>
     <div class="status-item"><span>LATENCY:</span><span class="status-ok" id="latency">--</span></div>
-    <div class="status-item"><span>MODELS:</span><span class="status-ok" id="modelCount">34/34</span></div>
+    <div class="status-item"><span>MODELS:</span><span class="status-ok" id="modelCount">43/43</span></div>
     <div class="status-item"><span>UPTIME:</span><span id="uptime">00:00:00</span></div>
     <div class="status-item"><span>TICK:</span><span id="tickCount">0</span></div>
     <div class="status-item"><span>DRAWDOWN:</span><span class="status-ok" id="ddStatus">0.0%</span></div>

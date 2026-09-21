@@ -66,13 +66,20 @@ export class EnsembleEngine {
     }
 
     // Compute weighted ensemble signal
-    let ensemble = 0;
+    let weightedSum = 0;
+    let activeWeight = 0;
     for (const a of ALGORITHMS) {
       const sig = signals[a.id];
       if (!sig) continue;
-      ensemble += this.weights[a.id] * sig.signal * sig.conf;
+      const w = this.weights[a.id] || (1 / ALGORITHMS.length);
+      const conf = typeof sig.conf === 'number' ? sig.conf : 0.5;
+      weightedSum += w * (sig.signal || 0) * conf;
+      activeWeight += w;
     }
-    ensemble = clamp(ensemble * ALGORITHMS.length * 0.5, -1, 1);
+    const rawEnsemble = activeWeight > 0 ? (weightedSum / activeWeight) : 0;
+    // Scale by 1.75 to map average confidence-weighted signal into [-1, 1] without artificial saturation
+    let ensemble = clamp(rawEnsemble * 1.75, -1, 1);
+    if (Math.abs(ensemble) < 0.04) ensemble = 0; // Filter out micro noise
 
     // Store predictions for next evaluation
     this.prevPredictions = {};

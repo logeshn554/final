@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  eth-trading-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: eth-quant-engine
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=production
+      - HOST=0.0.0.0
+      - PORT=8000
+      - LOG_LEVEL=INFO
+      - LOG_JSON=true
+      - DATABASE_PATH=/app/data/trades.db
+    volumes:
+      - engine-data:/app/data
+      - engine-logs:/app/logs
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2048M
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+
+volumes:
+  engine-data:
+    driver: local
+  engine-logs:
+    driver: local

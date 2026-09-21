@@ -41,6 +41,16 @@ export const ALGORITHMS = [
   { id:32, name:'Multi-Objective', cat:'advanced', tag:'MORL',     desc:'Pareto front' },
   { id:33, name:'Safe RL',         cat:'advanced', tag:'SRL',      desc:'Constraint sat' },
   { id:34, name:'Transformer RL',  cat:'advanced', tag:'GTrXL',    desc:'Seq attention' },
+  // RESEARCH-GRADE EXTENDED SUITE (35-43)
+  { id:35, name:'QR-DQN',          cat:'advanced', tag:'QRDQN',    desc:'Quantile regression' },
+  { id:36, name:'IQN',             cat:'advanced', tag:'IQN',      desc:'Implicit quantiles' },
+  { id:37, name:'FQF',             cat:'advanced', tag:'FQF',      desc:'Fraction proposal' },
+  { id:38, name:'IQL',             cat:'model',    tag:'IQL',      desc:'In-sample expectile' },
+  { id:39, name:'Conservative Q',  cat:'model',    tag:'CQL',      desc:'OOD Q-penalty' },
+  { id:40, name:'Decision Xformer',cat:'advanced', tag:'DT',       desc:'Return-to-go causal' },
+  { id:41, name:'TD-MPC2',         cat:'model',    tag:'TDMPC2',   desc:'Latent planning' },
+  { id:42, name:'CPO Lagrangian',  cat:'advanced', tag:'CPO',      desc:'Constrained policy' },
+  { id:43, name:'Option-Critic',   cat:'advanced', tag:'OC',       desc:'Hierarchical options' },
 ];
 
 // Trading actions

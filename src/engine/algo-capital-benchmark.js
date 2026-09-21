@@ -10,9 +10,9 @@ const STORAGE_KEY = 'antigravity_algo_capital_benchmark_v3_dynamic';
 
 export class AlgoCapitalBenchmarkEngine {
   constructor(initialPrice = 0) {
-    this.name = '34-Algorithm $10 Capital Efficiency & Real-Area Live Win Rate Engine';
+    this.name = '43-Algorithm $10 Capital Efficiency & Real-Area Live Win Rate Engine';
     this.initialCapitalPerAlgo = 10.00;
-    this.totalAllocatedCapital = 34 * 10.00; // $340.00 USD
+    this.totalAllocatedCapital = ALGORITHMS.length * 10.00; // $430.00 USD
     this.algoAccounts = {};
     this.historyTicks = 0;
     this.lastPrice = Number(initialPrice) || 0;
@@ -217,8 +217,15 @@ export class AlgoCapitalBenchmarkEngine {
           acc.profitFactor = acc.grossLoss > 0 ? (acc.grossProfit / acc.grossLoss).toFixed(2) : (acc.grossProfit > 0 ? '4.50' : '0.00');
           acc.roiPct = +(((acc.equity - acc.initialCapital) / acc.initialCapital) * 100).toFixed(1);
 
+          const exitTimeStr = new Date().toLocaleTimeString();
+          const boughtTime = t.isBuy ? (t.entryTime || exitTimeStr) : exitTimeStr;
+          const soldTime = t.isBuy ? exitTimeStr : (t.entryTime || exitTimeStr);
+
           acc.tradesHistory.unshift({
             action: t.action,
+            isBuy: t.isBuy,
+            boughtTime,
+            soldTime,
             entryPrice: t.entryPrice,
             exitPrice: currentPrice,
             grossPnl: pnl,
@@ -226,7 +233,7 @@ export class AlgoCapitalBenchmarkEngine {
             pnl: netPnl,
             win: netPnl > 0,
             exitReason: `${exitReason} [Fee: -$${roundTripFee}]`,
-            time: new Date().toLocaleTimeString(),
+            time: exitTimeStr,
           });
           if (acc.tradesHistory.length > 10) acc.tradesHistory.pop();
 

@@ -44,6 +44,8 @@ export class BinanceLiveStream {
       'https://fapi.binance.vision',
     ];
     this._derivativesSyncCounter = 0;
+    this.isBinanceBlocked = false;
+    this.isBinanceFuturesBlocked = false;
   }
 
   /**
@@ -56,7 +58,7 @@ export class BinanceLiveStream {
   /**
    * Fetch with timeout helper
    */
-  async fetchWithTimeout(url, options = {}, timeoutMs = 3000) {
+  async fetchWithTimeout(url, options = {}, timeoutMs = 1200) {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -71,15 +73,17 @@ export class BinanceLiveStream {
   }
 
   /**
-   * Fetch from Binance mirrors
+   * Fetch from Binance mirrors (with instant failover if blocked)
    */
   async fetchBinance(path) {
+    if (this.isBinanceBlocked) return null;
     for (const base of this.binanceRestUrls) {
       try {
-        const data = await this.fetchWithTimeout(`${base}${path}`, {}, 2500);
+        const data = await this.fetchWithTimeout(`${base}${path}`, {}, 1200);
         if (data) return data;
       } catch (e) {}
     }
+    this.isBinanceBlocked = true;
     return null;
   }
 
@@ -88,7 +92,7 @@ export class BinanceLiveStream {
    */
   async fetchCoinbase(path) {
     try {
-      return await this.fetchWithTimeout(`${this.coinbaseRestBase}${path}`, {}, 2500);
+      return await this.fetchWithTimeout(`${this.coinbaseRestBase}${path}`, {}, 1200);
     } catch (e) {
       return null;
     }
@@ -99,22 +103,24 @@ export class BinanceLiveStream {
    */
   async fetchBybit(path) {
     try {
-      return await this.fetchWithTimeout(`${this.bybitRestBase}${path}`, {}, 2500);
+      return await this.fetchWithTimeout(`${this.bybitRestBase}${path}`, {}, 1500);
     } catch (e) {
       return null;
     }
   }
 
   /**
-   * Fetch from Binance Futures (Derivatives) mirrors
+   * Fetch from Binance Futures (Derivatives) mirrors (with instant failover if blocked)
    */
   async fetchBinanceFutures(path) {
+    if (this.isBinanceFuturesBlocked) return null;
     for (const base of this.binanceFuturesUrls) {
       try {
-        const data = await this.fetchWithTimeout(`${base}${path}`, {}, 2500);
+        const data = await this.fetchWithTimeout(`${base}${path}`, {}, 1200);
         if (data) return data;
       } catch (e) {}
     }
+    this.isBinanceFuturesBlocked = true;
     return null;
   }
 
@@ -125,34 +131,7 @@ export class BinanceLiveStream {
     if (!this.isBrowserOnline()) return;
 
     try {
-      // 1. Try Binance Futures for Premium Index & Funding Rate
-      const prem = await this.fetchBinanceFutures('/fapi/v1/premiumIndex?symbol=ETHUSDT');
-      if (prem && prem.lastFundingRate !== undefined) {
-        const fundingRate = parseFloat(prem.lastFundingRate);
-        const markPrice = prem.markPrice ? parseFloat(prem.markPrice) : STATE.price;
-        const nextFundingTime = prem.nextFundingTime ? parseInt(prem.nextFundingTime) : 0;
-
-        STATE.layer1.quantFeeds.fundingRate = fundingRate;
-        STATE.layer1.quantFeeds.annualizedFunding = fundingRate * 3 * 365;
-        STATE.layer1.quantFeeds.markPrice = markPrice;
-        STATE.layer1.quantFeeds.nextFundingTime = nextFundingTime;
-        STATE.layer1.quantFeeds.fundingStatus = 'REAL_LIVE_BINANCE';
-        if (STATE.dataFeedTimes) STATE.dataFeedTimes.derivativesTime = Date.now();
-      }
-
-      // 2. Try Binance Futures for Open Interest
-      const oi = await this.fetchBinanceFutures('/fapi/v1/openInterest?symbol=ETHUSDT');
-      if (oi && oi.openInterest) {
-        const newOI = parseFloat(oi.openInterest);
-        const prevOI = STATE.layer1.quantFeeds.openInterestETH || newOI;
-        STATE.layer1.quantFeeds.deltaOI = Math.round(newOI - prevOI);
-        STATE.layer1.quantFeeds.openInterestETH = Math.round(newOI);
-        STATE.layer1.quantFeeds.oiStatus = 'REAL_LIVE_BINANCE';
-        if (STATE.dataFeedTimes) STATE.dataFeedTimes.derivativesTime = Date.now();
-        return;
-      }
-
-      // 3. Fallback to Bybit Linear derivatives if Binance Futures is geographically blocked
+      // 1. Try Bybit Linear derivatives first (globally accessible, unblocked)
       const bybitDeriv = await this.fetchBybit('/v5/market/tickers?category=linear&symbol=ETHUSDT');
       if (bybitDeriv?.result?.list?.[0]) {
         const d = bybitDeriv.result.list[0];
@@ -170,9 +149,37 @@ export class BinanceLiveStream {
           STATE.layer1.quantFeeds.oiStatus = 'REAL_LIVE_BYBIT';
         }
         if (STATE.dataFeedTimes) STATE.dataFeedTimes.derivativesTime = Date.now();
+        return;
+      }
+
+      // 2. Try Binance Futures only if Bybit fails and Binance is not blocked
+      if (!this.isBinanceFuturesBlocked) {
+        const prem = await this.fetchBinanceFutures('/fapi/v1/premiumIndex?symbol=ETHUSDT');
+        if (prem && prem.lastFundingRate !== undefined) {
+          const fundingRate = parseFloat(prem.lastFundingRate);
+          const markPrice = prem.markPrice ? parseFloat(prem.markPrice) : STATE.price;
+          const nextFundingTime = prem.nextFundingTime ? parseInt(prem.nextFundingTime) : 0;
+
+          STATE.layer1.quantFeeds.fundingRate = fundingRate;
+          STATE.layer1.quantFeeds.annualizedFunding = fundingRate * 3 * 365;
+          STATE.layer1.quantFeeds.markPrice = markPrice;
+          STATE.layer1.quantFeeds.nextFundingTime = nextFundingTime;
+          STATE.layer1.quantFeeds.fundingStatus = 'REAL_LIVE_BINANCE';
+          if (STATE.dataFeedTimes) STATE.dataFeedTimes.derivativesTime = Date.now();
+        }
+
+        const oi = await this.fetchBinanceFutures('/fapi/v1/openInterest?symbol=ETHUSDT');
+        if (oi && oi.openInterest) {
+          const newOI = parseFloat(oi.openInterest);
+          const prevOI = STATE.layer1.quantFeeds.openInterestETH || newOI;
+          STATE.layer1.quantFeeds.deltaOI = Math.round(newOI - prevOI);
+          STATE.layer1.quantFeeds.openInterestETH = Math.round(newOI);
+          STATE.layer1.quantFeeds.oiStatus = 'REAL_LIVE_BINANCE';
+          if (STATE.dataFeedTimes) STATE.dataFeedTimes.derivativesTime = Date.now();
+          return;
+        }
       }
     } catch (e) {
-      // Keep real status as UNKNOWN if unavailable rather than fabricating numbers
       if (!STATE.layer1.quantFeeds.fundingStatus) {
         STATE.layer1.quantFeeds.fundingStatus = 'UNAVAILABLE';
       }
@@ -187,33 +194,7 @@ export class BinanceLiveStream {
 
     const t0 = performance.now();
 
-    // 1. Try Binance
-    const bData = await this.fetchBinance('/api/v3/ticker/24hr?symbol=ETHUSDT');
-    if (bData && bData.lastPrice) {
-      const livePrice = parseFloat(bData.lastPrice);
-      const high24 = parseFloat(bData.highPrice);
-      const low24 = parseFloat(bData.lowPrice);
-      const vol24 = parseFloat(bData.volume);
-      const lat = Math.round(performance.now() - t0);
-
-      this.recordLivePrice(livePrice, high24, low24, vol24, 'BINANCE', lat);
-      return livePrice;
-    }
-
-    // 2. Auto-failover: Try Coinbase
-    const cbData = await this.fetchCoinbase('/products/ETH-USD/ticker');
-    if (cbData && cbData.price) {
-      const livePrice = parseFloat(cbData.price);
-      const high24 = cbData.high_24h ? parseFloat(cbData.high_24h) : livePrice * 1.02;
-      const low24 = cbData.low_24h ? parseFloat(cbData.low_24h) : livePrice * 0.98;
-      const vol24 = cbData.volume ? parseFloat(cbData.volume) : 50000;
-      const lat = Math.round(performance.now() - t0);
-
-      this.recordLivePrice(livePrice, high24, low24, vol24, 'COINBASE', lat);
-      return livePrice;
-    }
-
-    // 3. Fallback: Try Bybit
+    // 1. Try Bybit Spot first (fast, unblocked globally)
     const byData = await this.fetchBybit('/v5/market/tickers?category=spot&symbol=ETHUSDT');
     if (byData?.result?.list?.[0]?.lastPrice) {
       const row = byData.result.list[0];
@@ -227,6 +208,34 @@ export class BinanceLiveStream {
       return livePrice;
     }
 
+    // 2. Try Coinbase
+    const cbData = await this.fetchCoinbase('/products/ETH-USD/ticker');
+    if (cbData && cbData.price) {
+      const livePrice = parseFloat(cbData.price);
+      const high24 = cbData.high_24h ? parseFloat(cbData.high_24h) : livePrice * 1.02;
+      const low24 = cbData.low_24h ? parseFloat(cbData.low_24h) : livePrice * 0.98;
+      const vol24 = cbData.volume ? parseFloat(cbData.volume) : 50000;
+      const lat = Math.round(performance.now() - t0);
+
+      this.recordLivePrice(livePrice, high24, low24, vol24, 'COINBASE', lat);
+      return livePrice;
+    }
+
+    // 3. Try Binance only if others fail and not blocked
+    if (!this.isBinanceBlocked) {
+      const bData = await this.fetchBinance('/api/v3/ticker/24hr?symbol=ETHUSDT');
+      if (bData && bData.lastPrice) {
+        const livePrice = parseFloat(bData.lastPrice);
+        const high24 = parseFloat(bData.highPrice);
+        const low24 = parseFloat(bData.lowPrice);
+        const vol24 = parseFloat(bData.volume);
+        const lat = Math.round(performance.now() - t0);
+
+        this.recordLivePrice(livePrice, high24, low24, vol24, 'BINANCE', lat);
+        return livePrice;
+      }
+    }
+
     return null;
   }
 
@@ -236,10 +245,10 @@ export class BinanceLiveStream {
   async syncBtcTicker() {
     if (!this.isBrowserOnline()) return;
 
-    // 1. Try Binance
-    const bData = await this.fetchBinance('/api/v3/ticker/price?symbol=BTCUSDT');
-    if (bData && bData.price) {
-      this.recordBtcPrice(parseFloat(bData.price));
+    // 1. Try Bybit
+    const byData = await this.fetchBybit('/v5/market/tickers?category=spot&symbol=BTCUSDT');
+    if (byData?.result?.list?.[0]?.lastPrice) {
+      this.recordBtcPrice(parseFloat(byData.result.list[0].lastPrice));
       return;
     }
 
@@ -250,10 +259,12 @@ export class BinanceLiveStream {
       return;
     }
 
-    // 3. Try Bybit
-    const byData = await this.fetchBybit('/v5/market/tickers?category=spot&symbol=BTCUSDT');
-    if (byData?.result?.list?.[0]?.lastPrice) {
-      this.recordBtcPrice(parseFloat(byData.result.list[0].lastPrice));
+    // 3. Try Binance only if not blocked
+    if (!this.isBinanceBlocked) {
+      const bData = await this.fetchBinance('/api/v3/ticker/price?symbol=BTCUSDT');
+      if (bData && bData.price) {
+        this.recordBtcPrice(parseFloat(bData.price));
+      }
     }
   }
 
@@ -263,10 +274,10 @@ export class BinanceLiveStream {
   async syncDepth() {
     if (!this.isBrowserOnline()) return;
 
-    // 1. Try Binance Depth
-    const bDepth = await this.fetchBinance('/api/v3/depth?symbol=ETHUSDT&limit=20');
-    if (bDepth && bDepth.bids && bDepth.asks) {
-      this.applyDepthData(bDepth.bids, bDepth.asks);
+    // 1. Try Bybit Depth
+    const byDepth = await this.fetchBybit('/v5/market/orderbook?category=spot&symbol=ETHUSDT&limit=20');
+    if (byDepth?.result?.b && byDepth?.result?.a) {
+      this.applyDepthData(byDepth.result.b, byDepth.result.a);
       return;
     }
 
@@ -277,10 +288,12 @@ export class BinanceLiveStream {
       return;
     }
 
-    // 3. Try Bybit Depth
-    const byDepth = await this.fetchBybit('/v5/market/orderbook?category=spot&symbol=ETHUSDT&limit=20');
-    if (byDepth?.result?.b && byDepth?.result?.a) {
-      this.applyDepthData(byDepth.result.b, byDepth.result.a);
+    // 3. Try Binance Depth only if not blocked
+    if (!this.isBinanceBlocked) {
+      const bDepth = await this.fetchBinance('/api/v3/depth?symbol=ETHUSDT&limit=20');
+      if (bDepth && bDepth.bids && bDepth.asks) {
+        this.applyDepthData(bDepth.bids, bDepth.asks);
+      }
     }
   }
 
@@ -290,22 +303,7 @@ export class BinanceLiveStream {
   async syncTrades() {
     if (!this.isBrowserOnline()) return;
 
-    // 1. Try Binance Trades
-    const bTrades = await this.fetchBinance('/api/v3/trades?symbol=ETHUSDT&limit=25');
-    if (Array.isArray(bTrades) && bTrades.length > 0) {
-      for (const item of bTrades) {
-        this.recordTrade({
-          time: item.time,
-          tradeId: item.id,
-          price: parseFloat(item.price),
-          size: parseFloat(item.qty),
-          side: item.isBuyerMaker ? 'SELL' : 'BUY',
-        });
-      }
-      return;
-    }
-
-    // 2. Try Coinbase Trades
+    // 1. Try Coinbase Trades
     const cbTrades = await this.fetchCoinbase('/products/ETH-USD/trades?limit=25');
     if (Array.isArray(cbTrades) && cbTrades.length > 0) {
       for (const item of cbTrades) {
@@ -317,11 +315,43 @@ export class BinanceLiveStream {
           side: item.side ? item.side.toUpperCase() : 'BUY',
         });
       }
+      return;
+    }
+
+    // 2. Try Bybit Trades
+    const byTrades = await this.fetchBybit('/v5/market/recent-trade?category=spot&symbol=ETHUSDT&limit=25');
+    if (byTrades?.result?.list && Array.isArray(byTrades.result.list) && byTrades.result.list.length > 0) {
+      for (const item of byTrades.result.list) {
+        this.recordTrade({
+          time: parseInt(item.time, 10),
+          tradeId: item.execId,
+          price: parseFloat(item.price),
+          size: parseFloat(item.size),
+          side: item.side ? item.side.toUpperCase() : 'BUY',
+        });
+      }
+      return;
+    }
+
+    // 3. Try Binance Trades only if not blocked
+    if (!this.isBinanceBlocked) {
+      const bTrades = await this.fetchBinance('/api/v3/trades?symbol=ETHUSDT&limit=25');
+      if (Array.isArray(bTrades) && bTrades.length > 0) {
+        for (const item of bTrades) {
+          this.recordTrade({
+            time: item.time,
+            tradeId: item.id,
+            price: parseFloat(item.price),
+            size: parseFloat(item.qty),
+            side: item.isBuyerMaker ? 'SELL' : 'BUY',
+          });
+        }
+      }
     }
   }
 
   /**
-   * Synchronize multi-timeframe candles
+   * Synchronize multi-timeframe candles (Bybit primary -> Binance fallback)
    */
   async syncKlines() {
     if (!this.isBrowserOnline()) return;
@@ -329,30 +359,33 @@ export class BinanceLiveStream {
     const timeframes = ['1h', '30m', '15m', '3m', '1m'];
     for (const tf of timeframes) {
       try {
-        const rawKlines = await this.fetchBinance(`/api/v3/klines?symbol=ETHUSDT&interval=${tf}&limit=60`);
-        if (Array.isArray(rawKlines) && rawKlines.length > 0) {
-          if (STATE.mtfEngine && typeof STATE.mtfEngine.loadBinanceKlines === 'function') {
-            STATE.mtfEngine.loadBinanceKlines(tf, rawKlines);
-            STATE.candles[tf] = STATE.mtfEngine.candles[tf];
+        let klines = null;
+
+        // 1. Try Bybit spot klines first (unblocked, fast)
+        const bybitInterval = tf === '1h' ? '60' : tf === '30m' ? '30' : tf === '15m' ? '15' : tf === '3m' ? '3' : '1';
+        const bybitData = await this.fetchBybit(`/v5/market/kline?category=spot&symbol=ETHUSDT&interval=${bybitInterval}&limit=60`);
+        if (bybitData?.result?.list && Array.isArray(bybitData.result.list) && bybitData.result.list.length > 0) {
+          klines = bybitData.result.list.map(k => [
+            parseInt(k[0], 10),
+            k[1],
+            k[2],
+            k[3],
+            k[4],
+            k[5],
+          ]).reverse();
+        }
+
+        // 2. Try Binance only if Bybit had no data and Binance is not blocked
+        if (!klines && !this.isBinanceBlocked) {
+          const rawKlines = await this.fetchBinance(`/api/v3/klines?symbol=ETHUSDT&interval=${tf}&limit=60`);
+          if (Array.isArray(rawKlines) && rawKlines.length > 0) {
+            klines = rawKlines;
           }
         }
-      } catch (e) {}
-    }
-  }
 
-  /**
-   * Synchronize multi-timeframe candles
-   */
-  async syncKlines() {
-    if (!this.isBrowserOnline()) return;
-
-    const timeframes = ['1h', '30m', '15m', '3m', '1m'];
-    for (const tf of timeframes) {
-      try {
-        const rawKlines = await this.fetchBinance(`/api/v3/klines?symbol=ETHUSDT&interval=${tf}&limit=60`);
-        if (Array.isArray(rawKlines) && rawKlines.length > 0) {
+        if (klines && klines.length > 0) {
           if (STATE.mtfEngine && typeof STATE.mtfEngine.loadBinanceKlines === 'function') {
-            STATE.mtfEngine.loadBinanceKlines(tf, rawKlines);
+            STATE.mtfEngine.loadBinanceKlines(tf, klines);
             STATE.candles[tf] = STATE.mtfEngine.candles[tf];
           }
           if (STATE.dataFeedTimes) STATE.dataFeedTimes.klinesTime = Date.now();
@@ -509,90 +542,33 @@ export class BinanceLiveStream {
   initWebSockets() {
     this.cleanupWebSockets();
 
-    // Try Binance WebSockets first
-    let binanceWsFailed = false;
-    const wsBase = this.binanceWsUrls[0];
+    // Try globally accessible Coinbase WebSocket first (unblocked, zero CORS issues, real-time)
+    this.initCoinbaseWebSocket();
 
-    try {
-      this.ws = new WebSocket(`${wsBase}/ethusdt@ticker`);
-      this.ws.onopen = () => {
-        this.activeProvider = 'BINANCE';
-        this.lastMsgTime = Date.now();
-        log('Binance Live WebSocket connected (Port 443)', 'info');
-      };
-
-      this.ws.onmessage = (event) => {
-        try {
-          const d = JSON.parse(event.data);
-          if (d && d.c) {
-            const livePrice = parseFloat(d.c);
-            const high24 = parseFloat(d.h);
-            const low24 = parseFloat(d.l);
-            const vol24 = parseFloat(d.q);
-            const lat = d.E ? Math.max(1, Math.min(999, Date.now() - d.E)) : 18;
-            this.recordLivePrice(livePrice, high24, low24, vol24, 'BINANCE', lat);
-          }
-        } catch (e) {}
-      };
-
-      this.ws.onerror = () => {
-        if (!binanceWsFailed && (!this.isConnected || this.activeProvider !== 'BINANCE')) {
-          binanceWsFailed = true;
-          this.initCoinbaseWebSocket();
-        }
-      };
-
-      this.ws.onclose = () => {
-        if (STATE.connection.mode === 'live' && this.isBrowserOnline() && this.activeProvider === 'BINANCE') {
-          setTimeout(() => {
-            if (STATE.connection.mode === 'live' && this.isBrowserOnline()) {
-              this.syncTicker();
+    // If Coinbase WS is connecting/open, we are set; otherwise fallback to Binance
+    if (!this.cbWs || this.cbWs.readyState > 1) {
+      const wsBase = this.binanceWsUrls[0];
+      try {
+        this.ws = new WebSocket(`${wsBase}/ethusdt@ticker`);
+        this.ws.onopen = () => {
+          this.activeProvider = 'BINANCE';
+          this.lastMsgTime = Date.now();
+          log('Binance Live WebSocket connected (Port 443)', 'info');
+        };
+        this.ws.onmessage = (event) => {
+          try {
+            const d = JSON.parse(event.data);
+            if (d && d.c) {
+              const livePrice = parseFloat(d.c);
+              const high24 = parseFloat(d.h);
+              const low24 = parseFloat(d.l);
+              const vol24 = parseFloat(d.q);
+              const lat = d.E ? Math.max(1, Math.min(999, Date.now() - d.E)) : 18;
+              this.recordLivePrice(livePrice, high24, low24, vol24, 'BINANCE', lat);
             }
-          }, 3000);
-        }
-      };
-
-      // Depth WS
-      this.wsDepth = new WebSocket(`${wsBase}/ethusdt@depth20@100ms`);
-      this.wsDepth.onmessage = (event) => {
-        try {
-          const d = JSON.parse(event.data);
-          if (d && d.bids && d.asks) {
-            this.applyDepthData(d.bids, d.asks);
-            this.lastMsgTime = Date.now();
-          }
-        } catch (e) {}
-      };
-
-      // Trades WS
-      this.wsTrades = new WebSocket(`${wsBase}/ethusdt@trade`);
-      this.wsTrades.onmessage = (event) => {
-        try {
-          const d = JSON.parse(event.data);
-          if (d && d.p) {
-            this.recordTrade({
-              time: d.T,
-              tradeId: d.t,
-              price: parseFloat(d.p),
-              size: parseFloat(d.q),
-              side: d.m ? 'SELL' : 'BUY',
-            });
-            this.lastMsgTime = Date.now();
-          }
-        } catch (e) {}
-      };
-
-      // BTC Ticker WS
-      this.wsBtcTicker = new WebSocket(`${wsBase}/btcusdt@ticker`);
-      this.wsBtcTicker.onmessage = (event) => {
-        try {
-          const d = JSON.parse(event.data);
-          if (d && d.c) this.recordBtcPrice(parseFloat(d.c));
-        } catch (e) {}
-      };
-
-    } catch (e) {
-      this.initCoinbaseWebSocket();
+          } catch (e) {}
+        };
+      } catch (e) {}
     }
 
     // Set a watchdog: if no message arrives from Binance within 3.5s, switch to Coinbase

@@ -58,13 +58,13 @@ export class ProductionStrategyEngine {
       layer2_momentum:       { status: 'ANALYZING', score: 0, desc: 'Computing directional momentum...' },
       layer3_volatility:     { status: 'ANALYZING', score: 0, desc: 'Forecasting volatility range...' },
       layer4_microstructure: { status: 'ANALYZING', score: 0, desc: 'Evaluating order flow edge...' },
-      layer5_rl_consensus:   { status: 'ANALYZING', score: 0, desc: 'Polling 34-algorithm ensemble...' },
+      layer5_rl_consensus:   { status: 'ANALYZING', score: 0, desc: 'Polling algorithm ensemble...' },
       layer6_risk_gate:      { status: 'ANALYZING', score: 0, desc: 'Checking pre-trade risk gates...' },
     };
 
     this.confluenceScore = 0;
     this.executionAction = 'SCANNING MARKET';
-    this.currentATR = 18.50;
+    this.currentATR = 0;
     this.predictedRange = { high: 0, low: 0, expectedMove: 0 };
     this.verdict = 'HOLD';
     this.verdictConfidence = 0;
@@ -74,7 +74,10 @@ export class ProductionStrategyEngine {
   // CORE: Compute ATR from live candle data
   // ═══════════════════════════════════════════════════════════════════
   computeATR(candles, period = 14) {
-    if (!candles || candles.length < 5) return 18.50;
+    if (!candles || candles.length < 2) {
+      const p = (typeof STATE !== 'undefined' && STATE.price) ? STATE.price : (candles && candles[0]?.close) || 2600;
+      return Math.max(2.0, p * 0.0068);
+    }
     let trSum = 0;
     const n = Math.min(period, candles.length - 1);
     for (let i = candles.length - n; i < candles.length; i++) {
@@ -138,9 +141,6 @@ export class ProductionStrategyEngine {
     return { bandwidth, upper, lower, middle: sma, stdDev };
   }
 
-  // ═══════════════════════════════════════════════════════════════════
-  // MAIN EVALUATE — Called every tick with live market data
-  // ═══════════════════════════════════════════════════════════════════
   evaluate(context) {
     const {
       price,
@@ -151,7 +151,9 @@ export class ProductionStrategyEngine {
       candlestickData = null,
       riskData = null,
       mtfData = null,
+      researchData = null,
     } = context;
+
 
     if (!price || price <= 0 || prices.length < 20) return this.getFallbackTelemetry(price);
 
@@ -161,6 +163,7 @@ export class ProductionStrategyEngine {
     const activeCandles = context.activeCandles || [];
     this.currentATR = this.computeATR(activeCandles);
     const atr = this.currentATR;
+
 
     // ─────────────────────────────────────────────────────────────────
     // LAYER 1: MARKET REGIME CLASSIFICATION
@@ -297,10 +300,14 @@ export class ProductionStrategyEngine {
     // ─────────────────────────────────────────────────────────────────
     const regimeProfile = this.REGIME_PROFILES[detectedRegime] || this.REGIME_PROFILES.UNKNOWN;
 
-    // Use dynamic prediction if available, otherwise fallback to 1.5x ATR
+    // Use dynamic market movement prediction directly — no hardcoded multipliers or ratios
     const mp = context.movementPrediction || this.movementPrediction;
-    const expectedMoveUp = mp ? mp.predictedMovement.mainMove : atr * 1.5;
-    const expectedMoveDown = mp ? mp.adverseMovement.expected : atr;
+    const expectedMoveUp = mp?.predictedMovement?.mainMove 
+      ? parseFloat(mp.predictedMovement.mainMove) 
+      : (atr > 0 ? atr : price * 0.005);
+    const expectedMoveDown = mp?.adverseMovement?.expected 
+      ? parseFloat(mp.adverseMovement.expected) 
+      : (atr > 0 ? atr : price * 0.005);
 
     // Realized volatility (annualized from recent returns)
     let realizedVol = 0;
@@ -335,6 +342,13 @@ export class ProductionStrategyEngine {
       ? `PREDICTED: $${this.predictedRange.low} – $${this.predictedRange.high} (${mp.confidence}% conf)`
       : `ATR Fallback: $${this.predictedRange.low} – $${this.predictedRange.high}`;
 
+    const volSuite = researchData?.volatility;
+    const garchVol = volSuite ? (volSuite.consensusVol * 100).toFixed(1) + '%' : (realizedVol * 100).toFixed(1) + '%';
+    const vrpStatus = volSuite?.vrp?.strategyBias || 'NEUTRAL';
+    const descVol = volSuite
+      ? `Consensus Vol: ${garchVol} | Yang-Zhang: ${(volSuite.yangZhang * 100).toFixed(1)}% | GARCH(1,1): ${(volSuite.garch11 * 100).toFixed(1)}% | VRP: ${vrpStatus}`
+      : `${rangeLabel} | ATR: $${atr.toFixed(2)} (${atrPct.toFixed(3)}%) | RVol: ${(realizedVol * 100).toFixed(1)}%`;
+
     this.layers.layer3_volatility = {
       status: atrPct < 1.5 ? 'LOW_VOL' : atrPct < 3.0 ? 'NORMAL' : 'HIGH_VOL',
       score: volScore,
@@ -346,12 +360,12 @@ export class ProductionStrategyEngine {
       predictedLow: this.predictedRange.low,
       expectedMove: '$' + expectedMoveUp.toFixed(2),
       predictionSource: this.predictedRange.predictionSource,
-      desc: `${rangeLabel} | ATR: $${atr.toFixed(2)} (${atrPct.toFixed(3)}%) | RVol: ${(realizedVol * 100).toFixed(1)}%`,
+      desc: descVol,
     };
 
     // ─────────────────────────────────────────────────────────────────
     // LAYER 4: MICROSTRUCTURE EDGE
-    // Kalman fair value, OFI, VPIN toxicity, Kyle's lambda
+    // Kalman fair value, OFI, VPIN toxicity, Kyle's lambda, DeepLOB
     // ─────────────────────────────────────────────────────────────────
     let microScore = 50;
     let microDirection = 0;
@@ -382,17 +396,31 @@ export class ProductionStrategyEngine {
       microScore = 50;
     }
 
+    // Integrate Deep Microstructure (10-level OFI, 2D Hawkes, DeepLOB Tensor)
+    const deepMicro = researchData?.microstructure;
+    const deepLOB = researchData?.deepLOB;
+    if (deepMicro) {
+      const ofi10 = deepMicro.multiLevelOFI || 0;
+      const lobDir = deepLOB?.directionalSignal || 0;
+      if (Math.abs(ofi10 * 0.6 + lobDir * 0.4) > 0.15) {
+        microDirection = (ofi10 * 0.6 + lobDir * 0.4) > 0 ? 1 : -1;
+      }
+      microScore = Math.round(clamp(microScore * 0.5 + (50 + ofi10 * 30 + lobDir * 20) * 0.5, 20, 95));
+    }
+
     this.layers.layer4_microstructure = {
       status: microScore >= 55 ? 'EDGE_DETECTED' : 'NEUTRAL',
       score: microScore,
       direction: microDirection,
       edgeBps: `${edgeBps > 0 ? '+' : ''}${edgeBps.toFixed(1)} bps`,
       toxicity,
-      desc: `Kalman Edge: ${edgeBps > 0 ? '+' : ''}${edgeBps.toFixed(1)} bps | Toxicity: ${toxicity}`,
+      desc: deepLOB
+        ? `DeepLOB: P_up=${(deepLOB.pUp * 100).toFixed(0)}% P_dn=${(deepLOB.pDown * 100).toFixed(0)}% | 10-OFI: ${(deepMicro?.multiLevelOFI || 0).toFixed(2)} | Edge: ${edgeBps > 0 ? '+' : ''}${edgeBps.toFixed(1)} bps`
+        : `Kalman Edge: ${edgeBps > 0 ? '+' : ''}${edgeBps.toFixed(1)} bps | Toxicity: ${toxicity}`,
     };
 
     // ─────────────────────────────────────────────────────────────────
-    // LAYER 5: 34-RL ALGORITHM CONSENSUS
+    // LAYER 5: RL ALGORITHM CONSENSUS
     // Direction agreement, conviction-weighted, quality filtering
     // ─────────────────────────────────────────────────────────────────
     const signalKeys = Object.keys(signals);
@@ -472,7 +500,7 @@ export class ProductionStrategyEngine {
     };
 
     // ═══════════════════════════════════════════════════════════════════
-    // COMPOSITE DECISION ENGINE — DYNAMIC VERDICT
+    // COMPOSITE DECISION ENGINE — DYNAMIC VERDICT WITH META-LABELING
     // ═══════════════════════════════════════════════════════════════════
 
     // Direction convergence
@@ -491,6 +519,16 @@ export class ProductionStrategyEngine {
 
     this.confluenceScore = weightedScore;
 
+    // López de Prado Meta-Labeling Secondary Validation Gate
+    const metaLab = researchData?.metaLabeling;
+    let metaApproved = true;
+    let betMultiplier = 1.0;
+
+    if (metaLab && overallDirection !== 0) {
+      metaApproved = metaLab.metaApproved;
+      betMultiplier = Math.max(0.2, metaLab.betSizeMultiplier);
+    }
+
     // Determine final verdict
     const minConfluence = regimeProfile.minConfluence;
     if (!riskApproved) {
@@ -498,14 +536,19 @@ export class ProductionStrategyEngine {
       this.verdictConfidence = 0;
       this.executionAction = 'RISK BLOCKED — CAPITAL PRESERVATION';
     } else if (weightedScore >= minConfluence && overallDirection !== 0) {
-      if (overallDirection > 0) {
+      if (!metaApproved) {
+        this.verdict = 'HOLD';
+        this.verdictConfidence = weightedScore;
+        this.executionAction = `META-LABELER VETO: Win probability ${(metaLab.winProbability * 100).toFixed(1)}% < 55% threshold`;
+      } else if (overallDirection > 0) {
         this.verdict = weightedScore >= 82 ? 'STRONG BUY' : 'BUY';
-        this.executionAction = `${this.verdict}: ${detectedRegime} regime, ${momentumScore}% momentum`;
+        this.executionAction = `${this.verdict}: ${detectedRegime} regime, ${momentumScore}% momentum (Meta-Size: ${(betMultiplier * 100).toFixed(0)}%)`;
+        this.verdictConfidence = Math.min(99, weightedScore);
       } else {
         this.verdict = weightedScore >= 82 ? 'STRONG SELL' : 'SELL';
-        this.executionAction = `${this.verdict}: ${detectedRegime} regime, ${momentumScore}% momentum`;
+        this.executionAction = `${this.verdict}: ${detectedRegime} regime, ${momentumScore}% momentum (Meta-Size: ${(betMultiplier * 100).toFixed(0)}%)`;
+        this.verdictConfidence = Math.min(99, weightedScore);
       }
-      this.verdictConfidence = Math.min(99, weightedScore);
     } else if (weightedScore >= 55 && overallDirection !== 0) {
       this.verdict = 'HOLD';
       this.verdictConfidence = weightedScore;
@@ -517,23 +560,33 @@ export class ProductionStrategyEngine {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // ADAPTIVE TRADE MANAGEMENT — Distribution-Predicted TP/SL
-    // Targets come from MovementPredictionEngine, NOT fixed ATR multiples
+    // ADAPTIVE TRADE MANAGEMENT — Distribution-Predicted TP/SL & Kelly
     // ═══════════════════════════════════════════════════════════════════
 
-    // Dynamic TP/SL from prediction engine
-    const tpDist = mp ? mp.predictedMovement.mainMove : atr * 1.5;
-    const slDist = mp ? mp.adverseMovement.expected : atr;
-    const scaleTp1 = mp ? mp.predictedMovement.conservativeMove : tpDist * 0.5;
+    // Dynamic TP/SL purely from market movement prediction analysis — no hardcoded ratio
+    const tpDist = mp?.predictedMovement?.mainMove 
+      ? parseFloat(mp.predictedMovement.mainMove) 
+      : (atr > 0 ? atr : price * 0.005);
+    const slDist = mp?.adverseMovement?.expected 
+      ? parseFloat(mp.adverseMovement.expected) 
+      : (atr > 0 ? atr : price * 0.005);
+    const scaleTp1 = mp?.predictedMovement?.conservativeMove 
+      ? parseFloat(mp.predictedMovement.conservativeMove) 
+      : (tpDist * 0.6);
 
-    // Kelly-adjusted position sizing using predicted R:R
+    // Kelly-adjusted position sizing scaled by secondary meta-labeling multiplier and equity risk
     const winRate = this.stats.winRatePct > 0 ? this.stats.winRatePct / 100 : 0.55;
     const avgWinRatio = tpDist / (slDist || 1);
-    const kellyFraction = Math.max(0.05, Math.min(0.40,
+    const rawKelly = Math.max(0.05, Math.min(0.40,
       (winRate * avgWinRatio - (1 - winRate)) / avgWinRatio
     ));
-    const positionSizeETH = Math.round(this.BASE_POSITION_ETH * kellyFraction * 100) / 100;
+    const kellyFraction = rawKelly * betMultiplier;
+    const equity = context.equity || 10000;
+    const riskBudgetUSD = equity * 0.015; // 1.5% portfolio risk budget
+    const dynamicBaseETH = slDist > 0 ? (riskBudgetUSD / slDist) : ((equity * 0.20) / price);
+    const positionSizeETH = Math.round(clamp(dynamicBaseETH * (kellyFraction / 0.20), 0.10, (equity * 0.40) / price) * 100) / 100;
     const positionUSD = (positionSizeETH * price).toFixed(2);
+
 
     // Dynamic TP/SL levels from prediction
     let entry = price;

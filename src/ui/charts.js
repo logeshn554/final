@@ -320,19 +320,31 @@ export function drawPriceChart() {
     ctx.font = 'bold 9px JetBrains Mono, monospace';
     ctx.fillText(fmtPrice(STATE.price), W - 60, cp + 3);
 
-    // ── Active Trade Setup Overlays: STOP LOSS (-0.25%) & TAKE PROFIT (+0.50%) ──
+    // ── Dynamic Trade Setup Overlays: STOP LOSS & TAKE PROFIT ──
     if (STATE.tradeSetup && STATE.tradeSetup.action !== 'NEUTRAL / ACCUMULATE') {
       const ts = STATE.tradeSetup;
-      const gain050 = ts.profit050ETHAt050PctUSD || '6.52';
-      const loss050 = ts.maxLoss050ETHUSD || '3.26';
-      const gainTp1 = (parseFloat(gain050) * 0.5).toFixed(2);
+      const curP = STATE.price || 2600;
+      const posETH = ts.positionETH || (STATE.movementPrediction ? (STATE.movementPrediction.confidence > 70 ? '1.25' : '0.75') : '1.00');
+      const mp = STATE.movementPrediction;
+      const dynAtr = ts.atrValue || (curP * 0.005);
+      const slDist = ts.slDistance || (mp?.adverseMovement?.expected ? parseFloat(mp.adverseMovement.expected) : (ts.stopLoss ? Math.abs(curP - ts.stopLoss) : dynAtr));
+      const tp1Dist = ts.tp1Distance || (mp?.predictedMovement?.conservativeMove ? parseFloat(mp.predictedMovement.conservativeMove) : (ts.takeProfit1 ? Math.abs(ts.takeProfit1 - curP) : (ts.tpDistance ? ts.tpDistance * 0.6 : dynAtr)));
+      const tp2Dist = ts.tp2Distance || ts.tpDistance || (mp?.predictedMovement?.mainMove ? parseFloat(mp.predictedMovement.mainMove) : (ts.takeProfit2 ? Math.abs(ts.takeProfit2 - curP) : dynAtr));
+
+      const slPct = Math.abs(ts.slPercent || ((slDist / curP) * 100)).toFixed(2);
+      const tp1Pct = Math.abs(ts.tp1Percent || ((tp1Dist / curP) * 100)).toFixed(2);
+      const tp2Pct = Math.abs(ts.tp2Percent || ((tp2Dist / curP) * 100)).toFixed(2);
+
+      const lossUSD = ts.maxLossUSD || (parseFloat(posETH) * slDist).toFixed(2);
+      const gainTp1 = ts.tp1GainUSD || (parseFloat(posETH) * tp1Dist).toFixed(2);
+      const gainTp2 = ts.potentialGainUSD || (parseFloat(posETH) * tp2Dist).toFixed(2);
 
       const isBuy = ts.isBuy !== undefined ? ts.isBuy : (ts.direction >= 0);
       const slAreaName = isBuy ? 'BUY SL AREA' : 'SELL SL AREA';
       const tp1AreaName = isBuy ? 'BUY TP1 AREA' : 'SELL TP1 AREA';
       const tpAreaName = isBuy ? 'BUY TP AREA' : 'SELL TP AREA';
 
-      // Stop Loss (-0.25% Scalp Risk Shield)
+      // Dynamic Stop Loss
       if (ts.stopLoss) {
         const slY = clamp(toY(ts.stopLoss), 15, H - 15);
         ctx.beginPath();
@@ -345,7 +357,7 @@ export function drawPriceChart() {
         ctx.setLineDash([]);
 
         ctx.font = 'bold 8px JetBrains Mono, monospace';
-        const slLabel = `${slAreaName} (-0.25%) ${fmtPrice(ts.stopLoss)} (-$${loss050}/0.50 ETH · ${isBuy ? 'Sell' : 'Buy'} to Cut Loss)`;
+        const slLabel = `${slAreaName} (-${slPct}%) ${fmtPrice(ts.stopLoss)} (-$${lossUSD} / ${posETH} ETH)`;
         const slWidth = ctx.measureText(slLabel).width + 10;
         ctx.fillStyle = '#ef4444';
         ctx.fillRect(W - slWidth - 5, slY - 7, slWidth, 14);
@@ -353,7 +365,7 @@ export function drawPriceChart() {
         ctx.fillText(slLabel, W - slWidth, slY + 3);
       }
 
-      // Take Profit 1 (+0.25% Micro Target)
+      // Dynamic Take Profit 1 (Scale-Out)
       if (ts.takeProfit1) {
         const tp1Y = clamp(toY(ts.takeProfit1), 15, H - 15);
         ctx.beginPath();
@@ -366,7 +378,7 @@ export function drawPriceChart() {
         ctx.setLineDash([]);
 
         ctx.font = 'bold 8px JetBrains Mono, monospace';
-        const tp1Label = `${tp1AreaName} (+0.25%) ${fmtPrice(ts.takeProfit1)} (+$${gainTp1}/0.50 ETH · ${isBuy ? 'Sell' : 'Buy'} 50%)`;
+        const tp1Label = `${tp1AreaName} (+${tp1Pct}%) ${fmtPrice(ts.takeProfit1)} (+$${gainTp1} / ${posETH} ETH · Scale 50%)`;
         const tp1Width = ctx.measureText(tp1Label).width + 10;
         ctx.fillStyle = '#10b981';
         ctx.fillRect(W - tp1Width - 5, tp1Y - 7, tp1Width, 14);
@@ -374,7 +386,7 @@ export function drawPriceChart() {
         ctx.fillText(tp1Label, W - tp1Width, tp1Y + 3);
       }
 
-      // Take Profit 2 (+0.50% Target Profit Only)
+      // Dynamic Take Profit 2 (Full Target)
       if (ts.takeProfit2) {
         const tp2Y = clamp(toY(ts.takeProfit2), 15, H - 15);
         ctx.beginPath();
@@ -387,7 +399,7 @@ export function drawPriceChart() {
         ctx.setLineDash([]);
 
         ctx.font = 'bold 8px JetBrains Mono, monospace';
-        const tp2Label = `${tpAreaName} (+0.50%) ${fmtPrice(ts.takeProfit2)} (+$${gain050}/0.50 ETH · 0.50 Target)`;
+        const tp2Label = `${tpAreaName} (+${tp2Pct}%) ${fmtPrice(ts.takeProfit2)} (+$${gainTp2} / ${posETH} ETH)`;
         const tp2Width = ctx.measureText(tp2Label).width + 10;
         ctx.fillStyle = '#10b981';
         ctx.fillRect(W - tp2Width - 5, tp2Y - 7, tp2Width, 14);

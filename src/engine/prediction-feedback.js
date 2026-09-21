@@ -637,6 +637,11 @@ export class PredictionFeedbackEngine {
     };
   }
 
+  /** Get recent failures list for UI display */
+  getRecentFailures(count = 5) {
+    return this.failureMemory.slice(-count).reverse();
+  }
+
   /** Get per-regime performance summary */
   getRegimeReport() {
     const report = {};

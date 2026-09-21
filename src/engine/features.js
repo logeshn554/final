@@ -136,8 +136,8 @@ export function extractFeatures(state) {
   const { prices, volumes, position, entryPrice, price } = state;
   const features = new Float64Array(20);
 
-  if (prices.length < 30) {
-    return features; // Not enough data
+  if (prices.length < 2) {
+    return features; // Need at least 2 prices for 1-bar return
   }
 
   // 0: Price return 1-bar (normalized)
@@ -230,23 +230,32 @@ export function extractFeatures(state) {
     features[17] = clamp((price - high) / (high * 0.01 || 1), -3, 0);
   }
 
-  // 18: Quant Algorithms Composite Signal (Classical + Institutional Pinnacle Engine) [-3, 3]
+  // 18: Quant Algorithms Composite Signal (Classical + Institutional + DeepLOB + Neural Forecaster) [-3, 3]
   let classicalSig = state.tradingAlgos && typeof state.tradingAlgos.compositeSignal === 'number'
     ? state.tradingAlgos.compositeSignal
     : 0;
-  let instSig = state.institutionalAlgo && typeof state.institutionalAlgo.signal === 'number'
-    ? state.institutionalAlgo.signal
+  let instSig = state.institutionalAlgo
+    ? (typeof state.institutionalAlgo.compositeSignal === 'number'
+        ? state.institutionalAlgo.compositeSignal
+        : (typeof state.institutionalAlgo.signal === 'number' ? state.institutionalAlgo.signal : 0))
     : 0;
-  features[18] = clamp((0.4 * classicalSig + 0.6 * instSig) * 3.0, -3, 3);
+  let lobSig = state.researchStack?.deepLOB?.directionalSignal || 0;
+  let neuralSig = state.researchStack?.neuralForecaster?.compositeSignal || 0;
+  features[18] = clamp((0.25 * classicalSig + 0.35 * instSig + 0.20 * lobSig + 0.20 * neuralSig) * 3.0, -3, 3);
 
-  // 19: Avellaneda-Stoikov HJB Reservation Skew & Kyle's Lambda Adverse Selection Proxy
-  if (state.institutionalAlgo && state.institutionalAlgo.avellaneda) {
+  // 19: Microstructure Imbalance & Adverse Selection (Multi-Level OFI + Kyle's Lambda + Avellaneda Skew)
+  if (state.researchStack?.microstructure) {
+    const ofi10 = state.researchStack.microstructure.multiLevelOFI || 0;
+    const kyleL = state.researchStack.microstructure.kyleLambda || 0.02;
+    features[19] = clamp(ofi10 * 2.0 - kyleL * 10.0, -3, 3);
+  } else if (state.institutionalAlgo && state.institutionalAlgo.avellaneda) {
     const invSkew = state.institutionalAlgo.avellaneda.inventorySkew || 0;
     const kyleOffset = state.institutionalAlgo.kyle?.adverseSelectionBps || 0;
     features[19] = clamp((invSkew * 0.5) + (kyleOffset * 0.2), -3, 3);
   } else {
     features[19] = clamp(state.spread / (price * 0.001 || 1), 0, 3);
   }
+
 
   // Clip all features to [-5, 5] for stability
   for (let i = 0; i < 20; i++) {

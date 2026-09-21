@@ -411,8 +411,9 @@ export class MovementPredictionEngine {
     const upsideQuantiles = this.upsidePredictor.predict(predFeatures);
     const downsideQuantiles = this.downsidePredictor.predict(predFeatures);
 
-    // Scale by current volatility relative to average
-    const volScale = atr > 0 ? clamp(atr / 15, 0.3, 3.0) : 1.0;
+    // Scale by current volatility relative to asset price dynamically
+    const baselineAtr = price > 0 ? price * 0.0065 : 15.0;
+    const volScale = atr > 0 ? clamp(atr / baselineAtr, 0.3, 3.0) : 1.0;
 
     // ─── 3. KDE DISTRIBUTION ───
     // Generate query points spanning the expected range
@@ -428,59 +429,93 @@ export class MovementPredictionEngine {
     const downDensity = KDEEstimator.estimate(analogDownMoves, downQueryPoints);
 
     // ─── 4. MFE/MAE ESTIMATION ───
-    const direction = this._determineDirection(ensemble, momentum, microDirection, candlestickScore, mtfConfluence);
+    const direction = this._determineDirection(ensemble, momentum, microDirection, candlestickScore, mtfConfluence, atr, price);
     const excursion = ExcursionEstimator.estimate(analogs, direction);
 
-    // ─── 5. ENSEMBLE THE THREE MODELS ───
-    const weights = this.modelWeights[regime] || this.modelWeights.UNKNOWN;
+    // ─── 5. ENSEMBLE THE THREE MODELS (DIRECTION-AWARE & DYNAMICALLY WEIGHTED) ───
+    const baseWeights = this.modelWeights[regime] || this.modelWeights.UNKNOWN;
+    let analogW = baseWeights.analog;
+    let quantileW = baseWeights.quantile;
+    let kdeW = baseWeights.kde;
+    if (analogs.length < 10 || analogQuality < 0.55) {
+      // Low analog coverage: dynamically shift weight into quantile and KDE estimators
+      const shift = (10 - Math.min(10, analogs.length)) * 0.02 + Math.max(0, 0.55 - analogQuality) * 0.3;
+      analogW = Math.max(0.10, analogW - shift);
+      quantileW += shift * 0.55;
+      kdeW += shift * 0.45;
+    } else if (analogs.length >= 20 && analogQuality >= 0.75) {
+      // High analog quality: dynamically boost empirical analog weight
+      analogW = Math.min(0.55, analogW + 0.10);
+      quantileW = Math.max(0.20, quantileW - 0.05);
+      kdeW = Math.max(0.20, kdeW - 0.05);
+    }
+    const totalW = analogW + quantileW + kdeW;
+    const weights = {
+      analog: analogW / totalW,
+      quantile: quantileW / totalW,
+      kde: kdeW / totalW,
+    };
+    const isShort = direction < 0;
 
-    // Upside prediction (how far price can move favorably)
-    const analogUpMedian = analogUpMoves.length > 0 ? percentile(analogUpMoves, 50) : atr * 1.5;
-    const analogUp75 = analogUpMoves.length > 0 ? percentile(analogUpMoves, 75) : atr * 2;
-    const analogUp25 = analogUpMoves.length > 0 ? percentile(analogUpMoves, 25) : atr * 0.8;
+    // Select favorable vs adverse empirical analog movements based on direction
+    const favorableAnalogMoves = isShort ? analogDownMoves : analogUpMoves;
+    const adverseAnalogMoves = isShort ? analogUpMoves : analogDownMoves;
 
-    const quantileUp50 = Math.abs(upsideQuantiles[0.50] || 0) * volScale;
-    const quantileUp75 = Math.abs(upsideQuantiles[0.75] || 0) * volScale;
-    const quantileUp25 = Math.abs(upsideQuantiles[0.25] || 0) * volScale;
+    const favorableQuantiles = isShort ? downsideQuantiles : upsideQuantiles;
+    const adverseQuantiles = isShort ? upsideQuantiles : downsideQuantiles;
 
-    const kdeUp50 = this._kdePercentile(upQueryPoints, upDensity, 0.50);
-    const kdeUp75 = this._kdePercentile(upQueryPoints, upDensity, 0.75);
-    const kdeUp25 = this._kdePercentile(upQueryPoints, upDensity, 0.25);
+    const favorableDensity = isShort ? downDensity : upDensity;
+    const adverseDensity = isShort ? upDensity : downDensity;
+    const favorableQueryPoints = isShort ? downQueryPoints : upQueryPoints;
+    const adverseQueryPoints = isShort ? upQueryPoints : downQueryPoints;
+
+    // Favorable movement (how far price can move in our trade's favor: up for Long, down for Short)
+    const analogFavMedian = favorableAnalogMoves.length > 0 ? percentile(favorableAnalogMoves, 50) : atr * 1.5;
+    const analogFav75 = favorableAnalogMoves.length > 0 ? percentile(favorableAnalogMoves, 75) : atr * 2;
+    const analogFav25 = favorableAnalogMoves.length > 0 ? percentile(favorableAnalogMoves, 25) : atr * 0.8;
+
+    const quantileFav50 = Math.abs(favorableQuantiles[0.50] || 0) * volScale;
+    const quantileFav75 = Math.abs(favorableQuantiles[0.75] || 0) * volScale;
+    const quantileFav25 = Math.abs(favorableQuantiles[0.25] || 0) * volScale;
+
+    const kdeFav50 = this._kdePercentile(favorableQueryPoints, favorableDensity, 0.50);
+    const kdeFav75 = this._kdePercentile(favorableQueryPoints, favorableDensity, 0.75);
+    const kdeFav25 = this._kdePercentile(favorableQueryPoints, favorableDensity, 0.25);
 
     // Weighted ensemble for favorable movement
     const conservativeMove = Math.max(1,
-      weights.analog * analogUp25 +
-      weights.quantile * quantileUp25 +
-      weights.kde * kdeUp25
+      weights.analog * analogFav25 +
+      weights.quantile * quantileFav25 +
+      weights.kde * kdeFav25
     );
     const mainMove = Math.max(2,
-      weights.analog * analogUpMedian +
-      weights.quantile * quantileUp50 +
-      weights.kde * kdeUp50
+      weights.analog * analogFavMedian +
+      weights.quantile * quantileFav50 +
+      weights.kde * kdeFav50
     );
     const extendedMove = Math.max(3,
-      weights.analog * analogUp75 +
-      weights.quantile * quantileUp75 +
-      weights.kde * kdeUp75
+      weights.analog * analogFav75 +
+      weights.quantile * quantileFav75 +
+      weights.kde * kdeFav75
     );
 
-    // Downside prediction (adverse movement)
-    const analogDownMedian = analogDownMoves.length > 0 ? percentile(analogDownMoves, 50) : atr;
-    const analogDown75 = analogDownMoves.length > 0 ? percentile(analogDownMoves, 75) : atr * 1.5;
-    const quantileDown50 = Math.abs(downsideQuantiles[0.50] || 0) * volScale;
-    const quantileDown75 = Math.abs(downsideQuantiles[0.75] || 0) * volScale;
-    const kdeDown50 = this._kdePercentile(downQueryPoints, downDensity, 0.50);
-    const kdeDown75 = this._kdePercentile(downQueryPoints, downDensity, 0.75);
+    // Adverse movement (expected excursion against our trade: down for Long, up for Short)
+    const analogAdvMedian = adverseAnalogMoves.length > 0 ? percentile(adverseAnalogMoves, 50) : atr;
+    const analogAdv75 = adverseAnalogMoves.length > 0 ? percentile(adverseAnalogMoves, 75) : atr * 1.5;
+    const quantileAdv50 = Math.abs(adverseQuantiles[0.50] || 0) * volScale;
+    const quantileAdv75 = Math.abs(adverseQuantiles[0.75] || 0) * volScale;
+    const kdeAdv50 = this._kdePercentile(adverseQueryPoints, adverseDensity, 0.50);
+    const kdeAdv75 = this._kdePercentile(adverseQueryPoints, adverseDensity, 0.75);
 
     const expectedAdverseMove = Math.max(1,
-      weights.analog * analogDownMedian +
-      weights.quantile * quantileDown50 +
-      weights.kde * kdeDown50
+      weights.analog * analogAdvMedian +
+      weights.quantile * quantileAdv50 +
+      weights.kde * kdeAdv50
     );
     const worstAdverseMove = Math.max(2,
-      weights.analog * analogDown75 +
-      weights.quantile * quantileDown75 +
-      weights.kde * kdeDown75
+      weights.analog * analogAdv75 +
+      weights.quantile * quantileAdv75 +
+      weights.kde * kdeAdv75
     );
 
     // ─── 6. GENERATE DYNAMIC TARGETS ───
@@ -522,8 +557,8 @@ export class MovementPredictionEngine {
 
     // ─── 9. MODEL AGREEMENT ───
     const modelAgreement = this._assessModelAgreement(
-      analogUpMedian, quantileUp50, kdeUp50,
-      analogDownMedian, quantileDown50, kdeDown50
+      analogFavMedian, quantileFav50, kdeFav50,
+      analogAdvMedian, quantileAdv50, kdeAdv50
     );
 
     // ─── 10. PREDICTION INTERVAL (uncertainty) ───
@@ -702,12 +737,14 @@ export class MovementPredictionEngine {
     ]);
   }
 
-  /** Determine overall direction from multiple inputs */
-  _determineDirection(ensemble, momentum, microDirection, candlestickScore, mtfConfluence) {
+  /** Determine overall direction from multiple inputs with volatility-scaled deadband */
+  _determineDirection(ensemble, momentum, microDirection, candlestickScore, mtfConfluence, atr = 15, price = 2500) {
     const score = ensemble * 0.30 + (momentum / 100) * 0.25 +
       microDirection * 0.15 + candlestickScore * 0.15 + mtfConfluence * 0.15;
-    if (score > 0.08) return 1;
-    if (score < -0.08) return -1;
+    const volRatio = price > 0 ? (atr / price) : 0.006;
+    const deadband = clamp(volRatio * 8.0, 0.04, 0.12);
+    if (score > deadband) return 1;
+    if (score < -deadband) return -1;
     return 0;
   }
 
