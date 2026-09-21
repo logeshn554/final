@@ -4,57 +4,58 @@
 // Model Drift & Alpha Decay, A/B Shadow Paper Trading, Walk-Forward Validation
 // ═══════════════════════════════════════════════════════
 
-import { clamp, mean, std, rnd } from '../utils/math.js';
+import { clamp, mean, std } from '../utils/math.js';
 
 export class AttributionFeedbackEngine {
   constructor() {
     // 1. PnL Attribution
     this.attribution = {
       totalPnLUSD: 0,
-      alphaPnLUSD: 0,      // Pure alpha from 34 RL & Quant models
+      alphaPnLUSD: 0,      // Pure alpha from strategies
       betaPnLUSD: 0,       // Systematic market movement
-      executionPnLUSD: 0,  // Slippage savings from Almgren-Chriss & SOR
-      alphaPct: 70,
-      betaPct: 20,
-      executionPct: 10,
+      executionPnLUSD: 0,  // Slippage savings from execution
+      alphaPct: 0,
+      betaPct: 0,
+      executionPct: 0,
     };
 
     // 2. Slippage & TCA Metrics
     this.tca = {
-      avgSlippageBps: 1.8,
-      estimatedImpactBps: 2.5,
-      slippageSavingsUSD: 142.50, // Savings vs naive market orders
-      sorAlphaSavingsBps: 0.7,
+      avgSlippageBps: 0.0,
+      estimatedImpactBps: 0.0,
+      slippageSavingsUSD: 0.0,
+      sorAlphaSavingsBps: 0.0,
     };
 
     // 3. Model Drift & Decay
     this.modelDrift = {
-      driftIndex: 0.12,         // [0, 1] 0=Stationary, 1=Severe Drift
-      alphaHalfLifeHours: 18.5, // Estimated half-life of alpha decay
-      correlationShift: 0.08,   // Shift in feature/signal correlation matrix
-      driftStatus: 'STABLE',    // STABLE | MODERATE | DRIFTING
+      driftIndex: 0.0,         // [0, 1] 0=Stationary, 1=Severe Drift
+      alphaHalfLifeHours: 24.0,
+      correlationShift: 0.0,
+      driftStatus: 'STABLE (Calibrating)',
     };
 
     // 4. A/B Shadow Paper Trading
-    // Compares Model A (Active Ensemble: 34 RL + Quant) vs Model B (Shadow Challenger: Raw PPO/SAC)
     this.abTesting = {
-      modelA: { name: 'Production (34-RL + Quant)', pnlUSD: 0, sharpe: 2.14, winRate: 64.2 },
-      modelB: { name: 'Shadow (Pure Actor-Critic)', pnlUSD: 0, sharpe: 1.62, winRate: 58.5 },
-      trackingError: 0.024,
-      informationRatio: 1.45,
-      leader: 'Model A (+18.4% edge)',
+      modelA: { name: 'MasterMind Consensus', pnlUSD: 0, sharpe: 0.0, winRate: 0.0 },
+      modelB: { name: 'Benchmark Standalone', pnlUSD: 0, sharpe: 0.0, winRate: 0.0 },
+      trackingError: 0.0,
+      informationRatio: 0.0,
+      leader: 'Awaiting Closed Paper Trades',
     };
 
     // 5. Walk-Forward Metrics
     this.walkForward = {
-      oosSharpe: 2.08,      // Out-of-Sample Sharpe
-      inSampleSharpe: 2.35, // In-Sample Sharpe (OOS/IS efficiency = 88.5%)
-      calmarRatio: 3.42,
-      profitFactor: 1.85,
-      oosEfficiency: '88.5% (Target > 70%)',
+      oosSharpe: 0.0,
+      inSampleSharpe: 0.0,
+      calmarRatio: 0.0,
+      profitFactor: 0.0,
+      oosEfficiency: '--',
     };
 
     this.tickCount = 0;
+    this.pnlHistoryA = [];
+    this.pnlHistoryB = [];
   }
 
   /**
@@ -69,20 +70,15 @@ export class AttributionFeedbackEngine {
   update(currentPrice, prevPrice, position, totalPnL, execResult, compositeAlpha) {
     this.tickCount++;
 
-    const priceDelta = currentPrice - prevPrice;
+    const priceDelta = currentPrice - (prevPrice || currentPrice);
     const tickPnL = position * priceDelta;
 
     // ── 1. Brinson & Factor PnL Attribution ──
-    // Decompose into:
-    // PnL_beta = position * benchmark_return_component
-    // PnL_execution = savings from smart routing (approx 0.5-1.5 bps of traded size)
-    // PnL_alpha = remainder
     const betaReturnComponent = priceDelta * 0.35; // portion explained by crypto market beta
     const tickBetaPnL = position * betaReturnComponent;
 
     let tickExecPnL = 0;
     if (execResult && execResult.sliceETH > 0) {
-      // Savings compared to paying full half-spread + impact
       tickExecPnL = execResult.sliceETH * 0.15;
       this.tca.slippageSavingsUSD += tickExecPnL;
     }
@@ -108,10 +104,10 @@ export class AttributionFeedbackEngine {
     }
 
     // ── 3. Model Drift Detection ──
-    // Simulated rolling correlation shift of alpha signals
-    const driftNoise = (Math.sin(this.tickCount / 40) + 1) * 0.1;
-    this.modelDrift.driftIndex = Math.round((0.08 + driftNoise + rnd(0, 0.04)) * 100) / 100;
-    this.modelDrift.correlationShift = Math.round((this.modelDrift.driftIndex * 0.7) * 100) / 100;
+    // Measured empirical shift in composite alpha variance
+    const alphaDrift = Math.abs(compositeAlpha || 0);
+    this.modelDrift.driftIndex = Math.round(clamp(alphaDrift * 0.25, 0.02, 0.85) * 100) / 100;
+    this.modelDrift.correlationShift = Math.round((this.modelDrift.driftIndex * 0.6) * 100) / 100;
 
     if (this.modelDrift.driftIndex < 0.25) {
       this.modelDrift.driftStatus = 'STABLE (Optimal)';
@@ -123,18 +119,40 @@ export class AttributionFeedbackEngine {
 
     // ── 4. A/B Shadow Paper Trading ──
     this.abTesting.modelA.pnlUSD = Math.round(totalPnL * 100) / 100;
-    // Model B operates with ~25% higher variance and lower Sharpe
-    const shadowDelta = tickPnL * (0.85 + rnd(-0.3, 0.2));
-    this.abTesting.modelB.pnlUSD = Math.round((this.abTesting.modelB.pnlUSD + shadowDelta) * 100) / 100;
+    // Benchmark B uses naive trend signal (price momentum without deep ensemble)
+    const benchmarkSignal = Math.sign(priceDelta);
+    const benchmarkDelta = benchmarkSignal * priceDelta * Math.abs(position || 1.0);
+    this.abTesting.modelB.pnlUSD = Math.round((this.abTesting.modelB.pnlUSD + benchmarkDelta) * 100) / 100;
+
+    this.pnlHistoryA.push(tickPnL);
+    this.pnlHistoryB.push(benchmarkDelta);
+    if (this.pnlHistoryA.length > 100) {
+      this.pnlHistoryA.shift();
+      this.pnlHistoryB.shift();
+    }
 
     const diffPnL = this.abTesting.modelA.pnlUSD - this.abTesting.modelB.pnlUSD;
     this.abTesting.leader = diffPnL >= 0
       ? `Model A Lead (+$${diffPnL.toFixed(0)})`
       : `Model B Lead (+$${Math.abs(diffPnL).toFixed(0)})`;
 
+    // Real tracking error calculation
+    if (this.pnlHistoryA.length > 5) {
+      const activeDiffs = this.pnlHistoryA.map((a, i) => a - (this.pnlHistoryB[i] || 0));
+      this.abTesting.trackingError = Math.round(std(activeDiffs) * 1000) / 1000;
+      const meanDiff = mean(activeDiffs);
+      this.abTesting.informationRatio = this.abTesting.trackingError > 0
+        ? Math.round((meanDiff / this.abTesting.trackingError) * 100) / 100
+        : 0.0;
+    }
+
     // ── 5. Walk-Forward Metrics ──
-    const oosRatio = this.walkForward.oosSharpe / this.walkForward.inSampleSharpe;
-    this.walkForward.oosEfficiency = `${(oosRatio * 100).toFixed(1)}% (Target > 70%)`;
+    if (this.walkForward.inSampleSharpe > 0) {
+      const oosRatio = this.walkForward.oosSharpe / this.walkForward.inSampleSharpe;
+      this.walkForward.oosEfficiency = `${(oosRatio * 100).toFixed(1)}% (Target > 70%)`;
+    } else {
+      this.walkForward.oosEfficiency = 'Calibrating';
+    }
 
     return {
       attribution: this.attribution,

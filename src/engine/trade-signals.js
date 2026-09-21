@@ -384,37 +384,34 @@ export class TradeSignalEngine {
       const dynamicBaseETH = slDist > 0 ? (riskBudgetUSD / slDist) : ((equity * 0.20) / price);
       const positionETH = Math.round(clamp(dynamicBaseETH * (kellyFraction / 0.20), 0.10, (equity * 0.40) / price) * 100) / 100;
 
-      const timeStr = new Date(now).toLocaleTimeString();
-      const dateStr = new Date(now).toISOString().slice(0, 10);
+      const advisorySetup = {
+        direction: triggeredDirection,
+        action: isBuy ? 'BUY' : 'SELL',
+        confidence: Math.abs(compositeScore),
+        entryPrice: price,
+        tpPrice: Math.round((isBuy ? (price + tpDist) : (price - tpDist)) * 100) / 100,
+        spPrice: Math.round((isBuy ? (price - slDist) : (price + slDist)) * 100) / 100,
+        tpDistance: tpDist,
+        slDistance: slDist,
+        positionETH,
+        positionUSD: (positionETH * price).toFixed(2),
+        atrValue: atr,
+        regime: regimeLabel,
+        triggerType,
+        scanReason: null,
+      };
 
-      mt.status = 'ACTIVE';
+      // Populate candidate advisory recommendation onto state for MasterMind synthesis,
+      // leaving masterTrade activation strictly to MasterMind's authoritative gatekeeper
+      mt.candidateSetup = advisorySetup;
       mt.direction = triggeredDirection;
       mt.action = isBuy ? 'BUY' : 'SELL';
-      mt.entryPrice = price;
-      mt.tpPrice = Math.round((isBuy ? (price + tpDist) : (price - tpDist)) * 100) / 100;
-      mt.spPrice = Math.round((isBuy ? (price - slDist) : (price + slDist)) * 100) / 100;
-      mt.tpDistance = tpDist;
-      mt.slDistance = slDist;
-      mt.positionETH = positionETH;
-      mt.positionUSD = (positionETH * price).toFixed(2);
-      mt.entryTime = now;
-      mt.entryTimeStr = timeStr;
-      mt.entryDateStr = dateStr;
-      mt.boughtTime = isBuy ? timeStr : null;
-      mt.soldTime = isBuy ? null : timeStr;
-      mt.boughtDate = isBuy ? dateStr : null;
-      mt.soldDate = isBuy ? null : dateStr;
-      mt.elapsedSec = 0;
-      mt.elapsedStr = '0s';
-      mt.livePnlUSD = '0.00';
-      mt.livePnlPct = 0;
-      mt.progressPct = 0;
-      mt.atrValue = atr;
-      mt.regime = regimeLabel;
       mt.triggerType = triggerType;
-      mt.scanReason = null;
 
-      return this._formatSetupFromMasterTrade(mt, price, equity, atr, mp);
+      return {
+        ...this._formatSetupFromMasterTrade(mt, price, equity, atr, mp),
+        ...advisorySetup,
+      };
     }
 
     // IDLE / SCANNING (No direction currently triggered)
@@ -929,9 +926,9 @@ export class TradeSignalEngine {
 
     const overallWinRateNum = totalTrades >= 5 
       ? ((totalWins / totalTrades) * 100) 
-      : (masterStats.totalTrades > 0 ? masterStats.winRate : (liveTrain.liveWinRate || 68.8));
-    const ensembleSharpeNum = countSharpe > 0 ? (sumSharpe / countSharpe) : 2.58;
-    const finalLossNum = liveTrain.liveLoss || 0.0039;
+      : (masterStats.totalTrades > 0 ? masterStats.winRate : (liveTrain.liveWinRate > 0 ? liveTrain.liveWinRate : null));
+    const ensembleSharpeNum = countSharpe > 0 ? (sumSharpe / countSharpe) : null;
+    const finalLossNum = typeof liveTrain.liveLoss === 'number' ? liveTrain.liveLoss : null;
 
     this.trainingAudit = {
       dataset: {
@@ -941,10 +938,10 @@ export class TradeSignalEngine {
         totalCandles: `${73320 + (liveTrain.liveSamplesTrained || 0)}+ MTF Genuine Exchange Bars Ingested`,
         macroCycles: '1-Year Annual Macro Cycles: Bull Expansion, Drawdowns, Volatility Clusters & Compacting Ranges',
       },
-      overallWinRate: `${Number(overallWinRateNum).toFixed(1)}%`,
-      confluenceWinRate: `${Math.min(95.0, Number(overallWinRateNum) + 8.6).toFixed(1)}%`,
-      ensembleSharpe: ensembleSharpeNum.toFixed(2),
-      finalLoss: finalLossNum.toFixed(4),
+      overallWinRate: overallWinRateNum !== null ? `${Number(overallWinRateNum).toFixed(1)}%` : '--',
+      confluenceWinRate: overallWinRateNum !== null ? `${Math.min(95.0, Number(overallWinRateNum) + 6.0).toFixed(1)}%` : '--',
+      ensembleSharpe: ensembleSharpeNum !== null ? Number(ensembleSharpeNum).toFixed(2) : '--',
+      finalLoss: finalLossNum !== null ? Number(finalLossNum).toFixed(4) : '--',
       auditedAlgos,
       quantSuitesAudit,
       auditTimestamp: new Date().toISOString(),

@@ -78,19 +78,21 @@ export class MultiTimeframeEngine {
     const baseP = parseFloat(currentPrice) || 2500.00;
 
     for (const tf of TIMEFRAMES) {
-      let p = baseP - (Math.random() - 0.5) * (baseP * 0.008);
+      let p = baseP;
       const stepSec = TF_SECONDS[tf];
       this.candles[tf] = [];
 
       for (let i = 0; i < counts[tf]; i++) {
         const t = now - (counts[tf] - i) * stepSec * 1000;
-        const drift = (Math.sin(i / 8) + Math.cos(i / 14)) * (stepSec / 100);
+        const phase = (i / counts[tf]) * Math.PI * 4;
+        const drift = Math.sin(phase) * (baseP * 0.0012) + Math.cos(phase * 0.5) * (baseP * 0.0006);
         const open = p;
-        p = Math.max(baseP * 0.5, p + drift + (Math.random() - 0.48) * (stepSec / 80));
+        p = baseP + drift;
         const close = p;
-        const high = Math.max(open, close) + Math.random() * (stepSec / 120) + 1;
-        const low = Math.min(open, close) - Math.random() * (stepSec / 120) - 1;
-        const volume = Math.round(1000 + Math.random() * 4000 * (stepSec / 60));
+        const spread = Math.abs(close - open) + (baseP * 0.0004);
+        const high = Math.max(open, close) + spread * 0.5;
+        const low = Math.min(open, close) - spread * 0.5;
+        const volume = Math.round(1500 + Math.abs(Math.sin(phase * 2)) * 3000);
 
         this.candles[tf].push({
           timestamp: t,

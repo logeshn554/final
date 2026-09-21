@@ -184,86 +184,94 @@ export class MastermindEngine {
     const metaWinProb = research?.metaLabeling?.winProb || (py?.confidence || 0.65);
 
     // ─────────────────────────────────────────────────────────────────
-    // 6. MULTI-MODEL PERFORMANCE-WEIGHTED SYNTHESIS
+    // 6. MULTI-MODEL PERFORMANCE-WEIGHTED SYNTHESIS (GRANULAR CONSENSUS)
+    // Every Strategy × Measured Paper Performance × Confidence × Regime Affinity
     // ─────────────────────────────────────────────────────────────────
     const currentRegime = pyContributor.regime !== 'NORMAL'
       ? pyContributor.regime
       : (mp?.regime || ctx.regime || 'TRENDING').toUpperCase();
 
-    // Ingest empirical category weights from performance engine or compute dynamically
-    const wRL = perfWeights['ensemble_rl'] || 0.28;
-    const wPy = pyConnected ? (perfWeights['python_ensemble'] || 0.25) : 0.0;
-    const wInst = perfWeights['institutional_hjb'] || 0.20;
-    const wMTF = perfWeights['mtf_confluence'] || 0.15;
-    const wMicro = perfWeights['microstructure_deep'] || 0.12;
-
-    const sumW = wRL + wPy + wInst + wMTF + wMicro;
-    const normWRL = wRL / sumW;
-    const normWPy = wPy / sumW;
-    const normWInst = wInst / sumW;
-    const normWMTF = wMTF / sumW;
-    const normWMicro = wMicro / sumW;
-
-    // Composite components
-    const microScore = clamp(obi * 0.6 + (vpin < 0.3 ? 0.4 : -0.4), -1, 1);
-    const mtfCombined = clamp((mtfScore * 0.6) + (candScore * 0.4), -1, 1);
-
-    let rawMasterScore = (rlScore * normWRL)
-      + (pyScore * normWPy)
-      + (instScore * normWInst)
-      + (mtfCombined * normWMTF)
-      + (microScore * normWMicro);
-
-    // If empirical paper-trading winner exists, give it measured boost (do not blindly surrender authority)
-    if (hasReliableWinner && bestOverall) {
-      const bestSignalObj = stratPerf?.signals?.[bestOverall.id] || null;
-      if (bestSignalObj && bestSignalObj.direction !== 0) {
-        // 12% measured tilt towards proven winner
-        rawMasterScore = rawMasterScore * 0.88 + (bestSignalObj.direction * 0.85) * 0.12;
-      }
-    }
-
-    const masterScore = clamp(rawMasterScore, -1, 1);
-
-    // Calculate agreement metrics
-    let buyWeightSum = 0;
-    let sellWeightSum = 0;
-    let totalActionWeight = 0;
-    let buyCount = 0;
-    let sellCount = 0;
-    let totalCount = 0;
-
-    const supportingStrategies = [];
-    const conflictingStrategies = [];
-
-    // Evaluate agreement across all tracked strategies
+    // Pool of all active strategy signals (all 43 RL algorithms, Python models, quants, patterns)
     const activeSignalPool = (stratPerf?.signals && Object.keys(stratPerf.signals).length > 0)
       ? stratPerf.signals
       : (ctx.signals || {});
 
-    for (const [id, sigObj] of Object.entries(activeSignalPool)) {
-      if (!sigObj) continue;
-      const dir = typeof sigObj.direction === 'number' ? sigObj.direction : (sigObj.signal > 0.05 ? 1 : sigObj.signal < -0.05 ? -1 : 0);
-      if (dir === 0) continue;
-      const w = perfWeights[id] || 0.02;
-      totalCount++;
-      totalActionWeight += w;
+    const stratEntries = Object.entries(activeSignalPool);
+    const defaultWeight = 1.0 / Math.max(1, stratEntries.length);
 
-      if (dir > 0) {
-        buyCount++;
-        buyWeightSum += w;
+    let weightedDirectionSum = 0;
+    let totalWeightSum = 0;
+    let buyWeightSum = 0;
+    let sellWeightSum = 0;
+    let buyCount = 0;
+    let sellCount = 0;
+    let totalCount = 0;
+
+    for (const [id, sigObj] of stratEntries) {
+      if (!sigObj) continue;
+
+      // Directional value in [-1, 1]
+      const dirVal = typeof sigObj.direction === 'number' 
+        ? sigObj.direction 
+        : (typeof sigObj.signal === 'number' ? sigObj.signal : (sigObj.signal === 'BUY' ? 1 : sigObj.signal === 'SELL' ? -1 : 0));
+      
+      const conf = typeof sigObj.conf === 'number'
+        ? sigObj.conf
+        : (typeof sigObj.confidence === 'number' ? sigObj.confidence : 0.5);
+
+      // Strategy empirical paper performance weight
+      const stratKey = id.startsWith('rl_') ? id : (perfWeights[`rl_${id}`] !== undefined ? `rl_${id}` : id);
+      const empiricalW = perfWeights[id] !== undefined
+        ? perfWeights[id]
+        : (perfWeights[stratKey] !== undefined ? perfWeights[stratKey] : defaultWeight);
+
+      // Strategy regime affinity multiplier
+      const stratMeta = stratPerf?.strategies?.[id] || stratPerf?.strategies?.[stratKey];
+      const regimeAffinity = stratMeta?.regimeScore || stratMeta?.regimePerformance?.[currentRegime]?.affinityScore || 1.0;
+
+      // Granular strategy dynamic weight: w_i * c_i * r_i
+      const strategyDynamicWeight = Math.max(0.001, empiricalW * Math.max(0.15, conf) * Math.max(0.2, regimeAffinity));
+
+      if (Math.abs(dirVal) > 0.02) {
+        totalCount++;
+        totalWeightSum += strategyDynamicWeight;
+        weightedDirectionSum += dirVal * strategyDynamicWeight;
+
+        if (dirVal > 0) {
+          buyCount++;
+          buyWeightSum += strategyDynamicWeight;
+        } else {
+          sellCount++;
+          sellWeightSum += strategyDynamicWeight;
+        }
+      }
+    }
+
+    // Mathematical granular consensus: MasterScore = sum(w_i * c_i * r_i * d_i) / sum(w_i * c_i * r_i)
+    let rawMasterScore = totalWeightSum > 0 ? (weightedDirectionSum / totalWeightSum) : 0;
+    const masterScore = clamp(rawMasterScore, -1, 1);
+
+    const supportingStrategies = [];
+    const conflictingStrategies = [];
+
+    // Evaluate supporting vs conflicting strategies relative to final masterScore
+    for (const [id, sigObj] of stratEntries) {
+      if (!sigObj) continue;
+      const dirVal = typeof sigObj.direction === 'number'
+        ? sigObj.direction
+        : (typeof sigObj.signal === 'number' ? sigObj.signal : (sigObj.signal === 'BUY' ? 1 : sigObj.signal === 'SELL' ? -1 : 0));
+      if (Math.abs(dirVal) <= 0.02) continue;
+      if (dirVal > 0) {
         if (masterScore >= 0) supportingStrategies.push(id);
         else conflictingStrategies.push(id);
-      } else if (dir < 0) {
-        sellCount++;
-        sellWeightSum += w;
+      } else {
         if (masterScore <= 0) supportingStrategies.push(id);
         else conflictingStrategies.push(id);
       }
     }
 
     const rawAgreement = totalCount > 0 ? Math.round((Math.max(buyCount, sellCount) / totalCount) * 100) / 100 : 0.50;
-    const weightedAgreement = totalActionWeight > 0 ? Math.round((Math.max(buyWeightSum, sellWeightSum) / totalActionWeight) * 100) / 100 : 0.50;
+    const weightedAgreement = totalWeightSum > 0 ? Math.round((Math.max(buyWeightSum, sellWeightSum) / totalWeightSum) * 100) / 100 : 0.50;
 
     // ─────────────────────────────────────────────────────────────────
     // 7. CONFLICT RESOLUTION & CALIBRATED CONFIDENCE
@@ -562,7 +570,7 @@ export class MastermindEngine {
    * Selects structural dynamic stop from adverse movement distribution (NO FIXED %)
    */
   selectDynamicStop(params) {
-    const { entryPrice, direction, adverseMovement, volatility, pyStopLoss } = params;
+    const { entryPrice, direction, adverseMovement, volatility, pyStopLoss, marketStructure = {} } = params;
 
     if (pyStopLoss && pyStopLoss.stop_price) {
       const sp = Number(pyStopLoss.stop_price);
@@ -576,13 +584,17 @@ export class MastermindEngine {
       };
     }
 
-    const advMove = Number(adverseMovement?.expected) || (volatility * 1.0);
-    const worstMove = Number(adverseMovement?.worstCase) || (volatility * 1.5);
-    const buffer = volatility * 0.25;
+    // Invalidation from structural swing points if present in marketStructure
+    const structHigh = Number(marketStructure?.recentHigh || marketStructure?.swingHigh || 0);
+    const structLow = Number(marketStructure?.recentLow || marketStructure?.swingLow || 0);
 
-    const invalidationLevel = direction >= 0
-      ? Math.round((entryPrice - advMove) * 100) / 100
-      : Math.round((entryPrice + advMove) * 100) / 100;
+    const advMove = Number(adverseMovement?.expected) || (volatility > 0 ? volatility : (entryPrice * 0.004));
+    const worstMove = Number(adverseMovement?.worstCase) || (advMove * 1.5);
+    const buffer = volatility > 0 ? (volatility * 0.20) : (entryPrice * 0.001);
+
+    let invalidationLevel = direction >= 0
+      ? (structLow > 0 && structLow < entryPrice ? structLow : Math.round((entryPrice - advMove) * 100) / 100)
+      : (structHigh > 0 && structHigh > entryPrice ? structHigh : Math.round((entryPrice + advMove) * 100) / 100);
 
     const stopPrice = direction >= 0
       ? Math.round((invalidationLevel - buffer) * 100) / 100
@@ -596,6 +608,41 @@ export class MastermindEngine {
       selectedStopDistance,
       stopPrice,
       invalidationLevel,
+    };
+  }
+
+  /**
+   * Authoritative MasterMind Manual Trade Authorization
+   * Evaluates manual execution request through risk gates and returns canonical approval
+   */
+  evaluateManual(direction = 1, ctx = {}) {
+    const baseDecision = this.evaluate(ctx);
+    const killSwitchTriggered = Boolean(ctx.killSwitch || ctx.layer5?.mustLiquidate);
+    const micro = ctx.microstructure || {};
+    const vpin = typeof micro.vpin === 'number' ? micro.vpin : 0.20;
+    const isToxic = vpin > 0.45;
+
+    let manualApproved = false;
+    let manualReason = '';
+
+    if (killSwitchTriggered) {
+      manualApproved = false;
+      manualReason = 'MANUAL TRADE REJECTED: Emergency Kill Switch active.';
+    } else if (isToxic) {
+      manualApproved = false;
+      manualReason = `MANUAL TRADE REJECTED: Toxic informed flow VPIN ${(vpin * 100).toFixed(1)}% > 45%.`;
+    } else {
+      manualApproved = true;
+      manualReason = `MANUAL TRADE APPROVED: Discretionary ${direction > 0 ? 'BUY' : 'SELL'} authorized under MasterMind risk envelope.`;
+    }
+
+    return {
+      ...baseDecision,
+      direction,
+      signal: direction > 0 ? 'BUY' : 'SELL',
+      approved: manualApproved,
+      isManual: true,
+      reason: manualReason,
     };
   }
 }

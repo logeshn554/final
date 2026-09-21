@@ -13,6 +13,7 @@ import warnings
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List
 import numpy as np
+import pandas as pd
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 np.seterr(all="ignore")

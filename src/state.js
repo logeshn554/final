@@ -294,38 +294,39 @@ function createState() {
     },
 
     // 6-Month Multi-Timeframe Historical Pre-Training State
+    // Multi-Timeframe Historical Pre-Training State
     historicalTraining: {
       isTraining: false,
-      progress: 100,
-      trained: true,
+      progress: 0,
+      trained: false,
       metrics: {
-        datasetSize: '180 Days / 4,320 Hours Real Data (1h: 4,320 · 30m: 8,640 · 15m: 17,280 · 1m: 10,000+)',
-        startingPrice: 'DYNAMIC (Exchange Real Anchor)',
-        endingPrice: 'DYNAMIC (Live Stream Price)',
-        totalReturnPct: '+36.4%',
-        winRatePct: '68.8%',
-        confluenceWinRate: '77.4%',
-        sharpeRatio: '2.52',
-        finalLoss: '0.0039',
-        trainedEpochs: 1,
-        activePhase: '6-MONTH FULL PRE-TRAINING COMPLETED',
+        datasetSize: 'Pending Real Exchange Data (1m, 15m, 30m, 1h)',
+        startingPrice: '--',
+        endingPrice: '--',
+        totalReturnPct: '--',
+        winRatePct: '--',
+        confluenceWinRate: '--',
+        sharpeRatio: '--',
+        finalLoss: '--',
+        trainedEpochs: 0,
+        activePhase: 'STANDBY · AWAITING REAL DATA',
       },
-      historyLoss: [0.038, 0.024, 0.016, 0.011, 0.008, 0.0039],
+      historyLoss: [],
     },
 
     // Real-Time Online Continuous Training on Live Data Stream (Binance / Coinbase)
     liveTraining: {
       isActive: true,
       liveSamplesTrained: 0,
-      liveLoss: 0.0038,
-      liveWinRate: 72.5,
+      liveLoss: '--',
+      liveWinRate: 0.0,
       liveRewardsCumulative: 0.0,
       liveTradesEvaluated: 0,
       liveEpochs: 0,
       lastTrainedTimestamp: Date.now(),
       learningRate: 0.005,
-      recentLosses: [0.0042, 0.0039, 0.0036],
-      status: 'ONLINE_CONTINUOUS_LEARNING_ACTIVE',
+      recentLosses: [],
+      status: 'STANDBY (Awaiting Stream)',
     },
 
     // Active Trade Setup & Stop Loss / Take Profit Orders

@@ -271,23 +271,78 @@ window._clearAllTradingHistory = (skipConfirm = false) => {
   log('ALL TRADING HISTORY CLEARED: Clean slate ready for real-time live execution.', 'warn');
 };
 
-// Manual Execute: Instant BUY (1) or SELL (-1) for testing real-time live trading
+// Manual Execute: Instant BUY (1) or SELL (-1) passing strictly through MasterMind risk authorization
 window._manualExecuteTrade = (direction = 1) => {
-  tradeSignalEngine.manualExecute(STATE, direction);
+  const manualDecision = mastermindEngine.evaluateManual(direction, {
+    price: STATE.price,
+    prices: STATE.prices,
+    signals: STATE.signals,
+    strategyPerformance: STATE.strategyPerformance,
+    pythonEngineDecision: STATE.pythonEngine?.decision,
+    institutionalAlgo: STATE.institutionalAlgo,
+    microstructure: STATE.layer2?.microstructure || {},
+    candlestickAnalysis: STATE.candlestickAnalysis,
+    mtfAnalysis: STATE.mtfAnalysis,
+    movementPrediction: STATE.movementPrediction,
+    researchStack: STATE.researchStack,
+    autoHealing: STATE.autonomousHealingEngine,
+    equity: STATE.equity,
+    killSwitch: STATE.layer5?.mustLiquidate || STATE.layer5?.killSwitchTriggered,
+    atr: STATE.atr || 16.0,
+  });
+  STATE.masterDecision = manualDecision;
+
+  if (manualDecision.approved && STATE.masterTrade) {
+    STATE.masterTrade.status = 'ACTIVE';
+    STATE.masterTrade.direction = direction;
+    STATE.masterTrade.action = direction === 1 ? 'BUY' : 'SELL';
+    STATE.masterTrade.entryPrice = STATE.price;
+    STATE.masterTrade.tpPrice = manualDecision.execution?.takeProfitPrice || (direction === 1 ? STATE.price + 25 : STATE.price - 25);
+    STATE.masterTrade.spPrice = manualDecision.execution?.stopPrice || (direction === 1 ? STATE.price - 18 : STATE.price + 18);
+    STATE.masterTrade.tpDistance = Math.abs(STATE.masterTrade.tpPrice - STATE.price);
+    STATE.masterTrade.slDistance = Math.abs(STATE.masterTrade.spPrice - STATE.price);
+    STATE.masterTrade.positionETH = manualDecision.risk?.positionSizeETH || 1.0;
+    STATE.masterTrade.positionUSD = (STATE.masterTrade.positionETH * STATE.price).toFixed(2);
+    const now = Date.now();
+    const timeStr = new Date(now).toLocaleTimeString();
+    const dateStr = new Date(now).toISOString().slice(0, 10);
+    STATE.masterTrade.entryTime = now;
+    STATE.masterTrade.entryTimeStr = timeStr;
+    STATE.masterTrade.entryDateStr = dateStr;
+    STATE.masterTrade.boughtTime = direction === 1 ? timeStr : null;
+    STATE.masterTrade.soldTime = direction === 1 ? null : timeStr;
+    STATE.masterTrade.boughtDate = direction === 1 ? dateStr : null;
+    STATE.masterTrade.soldDate = direction === 1 ? null : dateStr;
+    STATE.masterTrade.elapsedSec = 0;
+    STATE.masterTrade.elapsedStr = '0s';
+    STATE.masterTrade.livePnlUSD = '0.00';
+    STATE.masterTrade.livePnlPct = 0;
+    STATE.masterTrade.progressPct = 0;
+    STATE.masterTrade.triggerType = `MANUAL ${direction === 1 ? 'BUY' : 'SELL'} (MasterMind Authorized)`;
+    STATE.masterTrade.scanReason = null;
+  }
+
   renderHeaderMasterSignalArea();
   renderActiveTradeSignal();
   renderMasterDecisionBox();
-  log(`MANUAL TRADE EXECUTED: ${direction === 1 ? 'BUY' : 'SELL'} @ $${STATE.price?.toFixed(2)} (Recorded at ${new Date().toLocaleTimeString()})`, 'info');
+  log(`MANUAL TRADE: ${direction === 1 ? 'BUY' : 'SELL'} @ $${STATE.price?.toFixed(2)} [MasterMind Auth: ${manualDecision.approved ? 'APPROVED' : 'BLOCKED'}]`, manualDecision.approved ? 'info' : 'warn');
 };
 
-// Manual Close: Instant market exit for active trade
+// Manual Close: Instant market exit for active trade governed by MasterMind
 window._manualCloseTrade = (reason = 'MANUAL MARKET EXIT') => {
-  tradeSignalEngine.manualClose(STATE, reason);
+  if (STATE.masterTrade && STATE.masterTrade.status === 'ACTIVE') {
+    const exitPrice = STATE.price;
+    const isBuy = STATE.masterTrade.direction === 1;
+    const grossPnl = isBuy ? (exitPrice - STATE.masterTrade.entryPrice) * (STATE.masterTrade.positionETH || 1.0)
+                           : (STATE.masterTrade.entryPrice - exitPrice) * (STATE.masterTrade.positionETH || 1.0);
+    const isWin = grossPnl > 0;
+    tradeSignalEngine._resolveTrade(STATE, STATE.masterTrade, exitPrice, reason, isWin, 'MANUAL EXIT');
+  }
   renderHeaderMasterSignalArea();
   renderActiveTradeSignal();
   renderMasterHistoryPage();
   renderMasterDecisionBox();
-  log(`MANUAL TRADE CLOSED: Position closed @ $${STATE.price?.toFixed(2)} (Exit recorded at ${new Date().toLocaleTimeString()})`, 'info');
+  log(`MANUAL TRADE CLOSED: Position closed @ $${STATE.price?.toFixed(2)} (Reason: ${reason})`, 'info');
 };
 
 // Calibrate all 43 algorithms immediately with 1-year multi-timeframe historical baselines
@@ -703,6 +758,19 @@ function tick() {
     }
   }
 
+  // MasterMind self-performance evaluation bus:
+  // Register previous tick's MasterMind decision into allStrategySignals
+  // so MasterMind's actual decisions are paper-traded and verified continuously!
+  if (STATE.masterDecision) {
+    allStrategySignals['mastermind'] = {
+      direction: STATE.masterDecision.direction || 0,
+      signal: STATE.masterDecision.signal || 'HOLD',
+      conf: STATE.masterDecision.confidence || 0.5,
+      tp: STATE.masterDecision.execution?.takeProfitPrice,
+      sl: STATE.masterDecision.execution?.stopPrice,
+    };
+  }
+
   strategyPerformanceEngine.ingestSignals(allStrategySignals, {
     price: STATE.price,
     spread: STATE.spread || 0.15,
@@ -745,10 +813,10 @@ function tick() {
       STATE.masterTrade.direction = masterDecision.direction;
       STATE.masterTrade.action = masterDecision.signal;
       STATE.masterTrade.entryPrice = STATE.price;
-      STATE.masterTrade.tpPrice = masterDecision.targetRange.base;
-      STATE.masterTrade.spPrice = masterDecision.stopRange.stopPrice;
+      STATE.masterTrade.tpPrice = masterDecision.execution?.takeProfitPrice || masterDecision.movement?.favorable?.targetPrice || masterDecision.targetRange?.base;
+      STATE.masterTrade.spPrice = masterDecision.execution?.stopPrice || masterDecision.movement?.adverse?.stopPrice || masterDecision.stopRange?.stopPrice;
       STATE.masterTrade.tpDistance = Math.abs(STATE.masterTrade.tpPrice - STATE.price);
-      STATE.masterTrade.slDistance = masterDecision.stopRange.riskDistance;
+      STATE.masterTrade.slDistance = Math.abs(STATE.masterTrade.spPrice - STATE.price);
       STATE.masterTrade.positionETH = masterDecision.risk.positionSizeETH;
       STATE.masterTrade.positionUSD = (masterDecision.risk.positionSizeETH * STATE.price).toFixed(2);
       STATE.masterTrade.entryTime = Date.now();

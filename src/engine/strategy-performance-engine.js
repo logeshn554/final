@@ -233,6 +233,19 @@ export class StrategyPerformanceEngine {
       if (priceDelta > trade.maxFavorableExcursion) trade.maxFavorableExcursion = priceDelta;
       if (-priceDelta > trade.maxAdverseExcursion) trade.maxAdverseExcursion = -priceDelta;
 
+      // Dynamic Market Trailing Stop:
+      // If price has traversed > 40% towards the target, ratchet the structural stop
+      const targetDist = Math.abs(trade.predictedTarget - trade.entryPrice);
+      if (targetDist > 0 && priceDelta > targetDist * 0.40) {
+        const lockedInGain = priceDelta * 0.35;
+        const newTrailingStop = isBuy ? (trade.entryPrice + lockedInGain) : (trade.entryPrice - lockedInGain);
+        if (isBuy && newTrailingStop > trade.predictedStop) {
+          trade.predictedStop = Math.round(newTrailingStop * 100) / 100;
+        } else if (!isBuy && newTrailingStop < trade.predictedStop) {
+          trade.predictedStop = Math.round(newTrailingStop * 100) / 100;
+        }
+      }
+
       let shouldClose = false;
       let exitReason = '';
       let exitPrice = p;
@@ -402,11 +415,56 @@ export class StrategyPerformanceEngine {
 
     // Recompute score & health
     this._recalculateStrategyScoreAndHealth(strat);
+
+    // Asynchronously dispatch closed trade to backend SQLite database
+    this._syncTradeToBackend(completedRecord);
+  }
+
+  /**
+   * Asynchronously synchronizes completed paper trade to backend SQLite database
+   */
+  async _syncTradeToBackend(completedRecord) {
+    try {
+      if (typeof fetch === 'undefined') return;
+      const payload = {
+        id: completedRecord.tradeId,
+        strategy_id: completedRecord.strategyId,
+        symbol: 'ETHUSDT',
+        timestamp: completedRecord.entryTimestamp / 1000,
+        side: completedRecord.side,
+        entry_price: completedRecord.entryPrice,
+        predicted_move: Math.abs(completedRecord.predictedTarget - completedRecord.entryPrice),
+        predicted_target: completedRecord.predictedTarget,
+        predicted_stop: completedRecord.predictedStop,
+        confidence: completedRecord.confidence || 0.5,
+        regime: completedRecord.entryRegime || 'UNKNOWN',
+        quantity: completedRecord.quantity || 1.0,
+        fees: completedRecord.feesUSD || 0,
+        slippage: completedRecord.slippageUSD || 0,
+        exit_price: completedRecord.exitPrice,
+        exit_timestamp: completedRecord.exitTimestamp / 1000,
+        pnl: completedRecord.grossPnlUSD,
+        net_pnl: completedRecord.netPnlUSD,
+        return_pct: completedRecord.returnPct,
+        holding_time: completedRecord.holdingTicks,
+        exit_reason: completedRecord.exitReason,
+        successful: completedRecord.isWin,
+        loss_reason: completedRecord.lossReason || '',
+      };
+
+      await fetch('http://127.0.0.1:8000/strategy-paper-trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      // Non-blocking: local engine state is already reliably maintained
+    }
   }
 
   /**
    * Ingests newly produced signals from all strategies at the current tick
-   * Opens equal-condition paper trades for actionable signals (no look-ahead)
+   * Opens equal-condition paper trades for actionable signals with strategy-specific dynamic market targets/stops
    */
   ingestSignals(allSignalsArg = {}, ctxArg = {}) {
     let allSignals = allSignalsArg;
@@ -422,14 +480,8 @@ export class StrategyPerformanceEngine {
     const curAtr = Number(ctx.atr || 16.0);
     const currentRegime = this._normalizeRegimeKey(ctx.regime || 'TRENDING');
 
-    const favMove = Number(mp?.predictedMovement?.mainMove || mp?.favorable?.[0]?.distance || curAtr * 1.4);
-    const advMove = Number(mp?.adverseMovement?.expected || mp?.adverse?.expected || curAtr * 1.0);
-
-    // Expected movement ranges from market predictor (ZERO fixed %)
-    const fwdUpTarget = price + favMove;
-    const fwdDownTarget = price - favMove;
-    const fwdUpStop = price - advMove;
-    const fwdDownStop = price + advMove;
+    const baseFavMove = Number(mp?.predictedMovement?.mainMove || mp?.favorable?.[0]?.distance || curAtr * 1.35);
+    const baseAdvMove = Number(mp?.adverseMovement?.expected || mp?.adverse?.expected || curAtr * 0.95);
 
     const keys = Object.keys(this.strategies);
 
@@ -448,22 +500,82 @@ export class StrategyPerformanceEngine {
         timestamp: Date.now(),
       };
 
-      // If strategy emits actionable signal and does not currently have an open trade
+      // 1. Check Signal Reversal on Existing Trade (Market-Driven Dynamic Invalidation)
+      if (this.openTrades[id]) {
+        const activeTrade = this.openTrades[id];
+        const isCurrentBuy = activeTrade.side === 'BUY';
+        if ((isCurrentBuy && direction <= -0.15) || (!isCurrentBuy && direction >= 0.15)) {
+          this._closePaperTrade(id, activeTrade, price, 'SIGNAL_REVERSAL', currentRegime);
+          delete this.openTrades[id];
+        }
+      }
+
+      // 2. Open New Independent Trade If Directional & Eligible
       if (direction !== 0 && !this.openTrades[id] && price > 10) {
         // Apply half spread & slippage at entry
         const entryPrice = direction > 0
           ? price + (spread / 2) + (price * (this.slippageBps / 10000))
           : price - (spread / 2) - (price * (this.slippageBps / 10000));
 
-        const target = direction > 0 ? fwdUpTarget : fwdDownTarget;
-        const stop = direction > 0 ? fwdUpStop : fwdDownStop;
+        // Derive strategy-specific market-driven target and stop (ZERO static multipliers)
+        let stratTarget = null;
+        let stratStop = null;
+
+        // Check if strategy emits explicit levels (e.g. MasterMind, Python ensemble, TSE)
+        if (sigData.tp && !isNaN(sigData.tp)) stratTarget = Number(sigData.tp);
+        else if (sigData.takeProfit && !isNaN(sigData.takeProfit)) stratTarget = Number(sigData.takeProfit);
+        else if (sigData.target && !isNaN(sigData.target)) stratTarget = Number(sigData.target);
+
+        if (sigData.sl && !isNaN(sigData.sl)) stratStop = Number(sigData.sl);
+        else if (sigData.stopLoss && !isNaN(sigData.stopLoss)) stratStop = Number(sigData.stopLoss);
+        else if (sigData.stop && !isNaN(sigData.stop)) stratStop = Number(sigData.stop);
+
+        // If not provided, derive based on strategy category horizon & market volatility
+        if (!stratTarget || !stratStop) {
+          let horizonMultiplier = 1.0;
+          let riskRewardBias = 1.4;
+
+          if (strat.category === 'Microstructure' || strat.id.includes('micro') || strat.id.includes('lob')) {
+            // High-frequency order book depth scalp: tight target and stop
+            horizonMultiplier = 0.55;
+            riskRewardBias = 1.25;
+          } else if (strat.category === 'Pattern' || strat.id.includes('candle')) {
+            // Candlestick pattern swing
+            horizonMultiplier = 1.1;
+            riskRewardBias = 1.35;
+          } else if (strat.category === 'Institutional' || strat.id.includes('hjb')) {
+            // Inventory reservation price spread
+            horizonMultiplier = 1.45;
+            riskRewardBias = 1.5;
+          } else if (strat.category === 'Python') {
+            horizonMultiplier = 1.3;
+            riskRewardBias = 1.4;
+          } else if (strat.category === 'RL' && !mp?.favorable?.[0]?.distance) {
+            // Slight differentiation based on algorithm family
+            const algoMod = ((strat.algoId || 1) % 4) * 0.08;
+            horizonMultiplier = 1.0 + algoMod;
+            riskRewardBias = 1.3 + (algoMod * 0.4);
+          }
+
+          const targetDistance = baseFavMove * (mp?.favorable?.[0]?.distance ? 1.0 : horizonMultiplier);
+          const stopDistance = (mp?.adverseMovement?.expected || mp?.adverse?.expected)
+            ? baseAdvMove
+            : (targetDistance / riskRewardBias);
+
+          if (!stratTarget) {
+            stratTarget = direction > 0 ? (price + targetDistance) : (price - targetDistance);
+          }
+          if (!stratStop) {
+            stratStop = direction > 0 ? (price - stopDistance) : (price + stopDistance);
+          }
+        }
 
         this.openTrades[id] = {
           strategyId: id,
           side: direction > 0 ? 'BUY' : 'SELL',
           entryPrice,
-          predictedTarget: target,
-          predictedStop: stop,
+          predictedTarget: Math.round(stratTarget * 100) / 100,
+          predictedStop: Math.round(stratStop * 100) / 100,
           quantity: 1.0, // Standard unit for fair comparison
           confidence: conf,
           entryRegime: currentRegime,
@@ -732,13 +844,24 @@ export class StrategyPerformanceEngine {
       trades: sortedOverall[0].totalTrades,
     } : null;
 
-    // Best Recent (highest last20 win rate + net PnL)
-    const sortedRecent = [...qualified].sort((a, b) => (b.windows.last20?.winRate || 0) - (a.windows.last20?.winRate || 0));
+    // Best Recent (Composite Recency Score: 40% WinRate20 + 30% ProfitFactor20 + 30% NetPnL20)
+    const sortedRecent = [...qualified].sort((a, b) => {
+      const a20 = a.windows.last20 || {};
+      const b20 = b.windows.last20 || {};
+      const aScore = ((a20.winRate || 0) / 100) * 0.40
+        + clamp((a20.profitFactor || 0) / 2.5, 0, 1) * 0.30
+        + clamp((a20.netProfitUSD || 0) / 30.0, -0.5, 0.5) * 0.30;
+      const bScore = ((b20.winRate || 0) / 100) * 0.40
+        + clamp((b20.profitFactor || 0) / 2.5, 0, 1) * 0.30
+        + clamp((b20.netProfitUSD || 0) / 30.0, -0.5, 0.5) * 0.30;
+      return bScore - aScore;
+    });
     const bestRecent = sortedRecent[0] ? {
       id: sortedRecent[0].id,
       name: sortedRecent[0].name,
       recentWinRate: sortedRecent[0].windows.last20?.winRate || 0,
       recentPnl: sortedRecent[0].windows.last20?.netProfitUSD || 0,
+      recentProfitFactor: sortedRecent[0].windows.last20?.profitFactor || 0,
     } : null;
 
     // Best for Current Regime

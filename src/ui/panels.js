@@ -2412,13 +2412,13 @@ export function renderTrainingAudit() {
     </div>
     <div class="stat-box">
       <div class="stat-k">Ensemble Sharpe Ratio</div>
-      <div class="stat-v" style="color:var(--accent);font-size:13px;">${audit.ensembleSharpe || '2.52'}</div>
-      <div style="font-size:8px;color:var(--muted);">Calmar 3.65 · Max DD -4.1%</div>
+      <div class="stat-v" style="color:var(--accent);font-size:13px;">${audit.ensembleSharpe || '--'}</div>
+      <div style="font-size:8px;color:var(--muted);">Empirical Risk-Adjusted Return</div>
     </div>
     <div class="stat-box">
       <div class="stat-k">MTF Confluence Win Rate</div>
-      <div class="stat-v" style="color:var(--green);font-size:13px;">${audit.confluenceWinRate || '77.4%'}</div>
-      <div style="font-size:8px;color:var(--muted);">Base Win Rate: ${audit.overallWinRate || '68.8%'}</div>
+      <div class="stat-v" style="color:var(--green);font-size:13px;">${audit.confluenceWinRate || '--'}</div>
+      <div style="font-size:8px;color:var(--muted);">Base Win Rate: ${audit.overallWinRate || '--'}</div>
     </div>
   `;
 
@@ -2430,8 +2430,8 @@ export function renderTrainingAudit() {
     </div>
     <div style="display:flex;align-items:center;gap:12px;font-size:9px;">
       <span style="color:var(--text);">Live Ticks Trained: <b style="color:var(--green);">${STATE.liveTraining?.liveSamplesTrained || 0}</b></span>
-      <span style="color:var(--text);">Live Loss: <b style="color:var(--warn);">${STATE.liveTraining?.liveLoss || '0.0038'}</b></span>
-      <span style="color:var(--text);">Live Step Win Rate: <b style="color:var(--green);">${STATE.liveTraining?.liveWinRate || '72.5%'}</b></span>
+      <span style="color:var(--text);">Live Loss: <b style="color:var(--warn);">${STATE.liveTraining?.liveLoss || '--'}</b></span>
+      <span style="color:var(--text);">Live Step Win Rate: <b style="color:var(--green);">${STATE.liveTraining?.liveWinRate ? `${STATE.liveTraining.liveWinRate}%` : '--'}</b></span>
       <span style="color:var(--text);">Online Epochs: <b style="color:var(--accent);">${STATE.liveTraining?.liveEpochs || 0}</b></span>
     </div>
   `;
@@ -2637,6 +2637,16 @@ export function renderAlgoWinRateAndFixPanel() {
   const champDownPct = ((champDownPts / champEntry) * 100).toFixed(2);
   const champPosETH = parseFloat(STATE.tradeSetup?.positionETH) || clamp(Math.round(((STATE.equity || 10000) * 0.015 / Math.max(1, champDownPts)) * 100) / 100, 0.15, 3.50);
 
+  // Unify Champion Selection: Anchor to authoritative StrategyPerformanceEngine
+  const perfBest = STATE.strategyPerformance?.bestOverall;
+  const championTitle = perfBest ? '#1 MASTERMIND CHAMPION STRATEGY' : '#1 BEST WIN RATE ALGORITHM';
+  const championName = perfBest ? perfBest.name : `${best.id}. ${best.name} (${best.tag})`;
+  const championCat = perfBest ? 'PAPER WINNER' : best.cat;
+  const championWinRate = perfBest ? Number(perfBest.winRate).toFixed(1) : best.currentWinRate.toFixed(1);
+  const championSubtitle = perfBest
+    ? `Empirical Paper Leader · Win Rate ${perfBest.winRate}% · Net PnL +$${perfBest.netPnl} (${perfBest.trades} evaluated trades)`
+    : `Highest Empirical Win Rate in ${algos.length || 43}-Algorithm Ensemble · ⏱ ${best.horizon || 'Dynamic (15m)'} · ${best.basis || 'RL Basis'}`;
+
   const champHtml = best ? `
     <div class="champion-card-animated" style="background:linear-gradient(135deg, rgba(16,185,129,0.12), rgba(0,212,255,0.08), rgba(15,23,42,0.95));border:1.5px solid var(--green);border-radius:6px;padding:8px 12px;margin-bottom:10px;">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:6px;">
@@ -2645,20 +2655,20 @@ export function renderAlgoWinRateAndFixPanel() {
           <div>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
               <span class="badge" style="background:#f59e0b;color:#000;font-weight:900;font-size:8px;padding:1px 6px;letter-spacing:0.4px;">
-                #1 BEST WIN RATE ALGORITHM
+                ${championTitle}
               </span>
               <span style="font-size:13px;font-weight:900;color:var(--text);letter-spacing:0.4px;">
-                ${best.id}. ${best.name} (${best.tag})
+                ${championName}
               </span>
               <span class="badge" style="background:rgba(0,212,255,0.15);color:var(--accent);font-size:7.5px;text-transform:uppercase;">
-                ${best.cat}
+                ${championCat}
               </span>
               <span class="badge-fee">
                 Binance Fee: -0.040% Taker / -0.020% Maker
               </span>
             </div>
             <div style="font-size:8px;color:var(--muted);margin-top:1px;">
-              Highest Empirical Win Rate in ${algos.length || 43}-Algorithm Ensemble · ⏱ ${best.horizon || 'Dynamic (15m)'} · ${best.basis || 'RL Basis'}
+              ${championSubtitle}
             </div>
           </div>
         </div>
@@ -2666,7 +2676,7 @@ export function renderAlgoWinRateAndFixPanel() {
           <div style="text-align:right;">
             <div style="font-size:7.5px;color:var(--muted);font-weight:700;">CHAMPION WIN RATE</div>
             <div style="font-size:20px;font-weight:900;color:var(--green);line-height:1.1;filter:drop-shadow(0 0 6px rgba(16,185,129,0.5));">
-              ${best.currentWinRate.toFixed(1)}%
+              ${championWinRate}%
             </div>
           </div>
         </div>
