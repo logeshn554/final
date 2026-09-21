@@ -156,7 +156,7 @@ window._resetBenchmark = () => {
   renderAlgoCapitalBenchmarkPanel();
 };
 window._fastSimBenchmark = (steps = 10) => {
-  capitalBenchmarkEngine.fastSimulate(steps, STATE.price, STATE.movementPrediction);
+  capitalBenchmarkEngine.fastSimulate(steps, STATE.price, STATE.movementPrediction, STATE.prices, STATE.signals);
   renderAlgoCapitalBenchmarkPanel();
   renderMasterDecisionBox();
 };
@@ -292,8 +292,15 @@ window._manualExecuteTrade = (direction = 1) => {
   });
   STATE.masterDecision = manualDecision;
 
-  if (manualDecision.approved && STATE.masterTrade) {
-    // Activate trade only if MasterMind approved AND execution levels are market-derived (not fixed numbers)
+  const targetETH = manualDecision.risk?.positionSizeETH || 1.0;
+  const preTrade = prodRiskEngine.checkPreTrade(targetETH, STATE.price, STATE.equity);
+  if (STATE.layer5?.metrics) {
+    STATE.layer5.metrics.preTradePassed = preTrade.approved;
+    STATE.layer5.metrics.lastPreTradeCheck = preTrade.reason;
+  }
+
+  if (manualDecision.approved && preTrade.approved && STATE.masterTrade) {
+    // Activate trade only if MasterMind AND Pre-Trade Risk approved with valid market-derived levels
     const tpPrice = manualDecision.execution?.takeProfitPrice;
     const spPrice = manualDecision.execution?.stopPrice;
     if (!tpPrice || !spPrice) {
@@ -329,7 +336,7 @@ window._manualExecuteTrade = (direction = 1) => {
     }
   } else if (STATE.masterTrade) {
     STATE.masterTrade.action = 'SCANNING';
-    STATE.masterTrade.scanReason = manualDecision.reason;
+    STATE.masterTrade.scanReason = !manualDecision.approved ? manualDecision.reason : `RISK_BLOCKED: ${preTrade.reason}`;
   }
 
   renderHeaderMasterSignalArea();

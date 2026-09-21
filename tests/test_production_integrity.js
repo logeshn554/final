@@ -279,13 +279,27 @@ console.log('\n[11] TEST: All 43 RL Algorithms Autonomous Dynamic TP & SL Detect
   const algos = createAlgorithms();
   assert(algos.length === 43, `All 43 RL algorithms loaded (found: ${algos.length})`);
 
+  // Verify source code is free of hardcoded multipliers and fixed ratios
+  const baseCode = readFileSync('./src/algorithms/base.js', 'utf-8');
+  assert(!baseCode.includes('0.85 + Math.min'), 'BaseAlgorithm has NO hardcoded 0.85 multiplier');
+  assert(!baseCode.includes('1.05 - Math.min'), 'BaseAlgorithm has NO hardcoded 1.05 multiplier');
+  assert(!baseCode.includes('atr * 0.75'), 'BaseAlgorithm has NO hardcoded atr * 0.75 fallback');
+
+  const diagCode = readFileSync('./src/engine/algo-diagnostics.js', 'utf-8');
+  assert(!diagCode.includes('horizonMultiplier = 1.0'), 'algo-diagnostics has NO horizonMultiplier parameter');
+  assert(!diagCode.includes('fav * (0.85'), 'algo-diagnostics has NO fav * 0.85 multiplier');
+
+  const benchCode = readFileSync('./src/engine/algo-capital-benchmark.js', 'utf-8');
+  assert(!benchCode.includes('acc.id % 2 === 0'), 'AlgoCapitalBenchmarkEngine has NO arbitrary even-ID BUY fallback');
+  assert(!benchCode.includes('Math.random() - 0.485'), 'AlgoCapitalBenchmarkEngine has NO random tick generator');
+
   const mockFeatures = new Float64Array(20).fill(0.05);
   const mockContext = {
     price: 2500.0,
     atr: 16.0,
     movementPrediction: {
-      predictedMovement: { mainMove: 22.0 },
-      adverseMovement: { expected: 11.0 },
+      predictedMovement: { conservativeMove: 14.0, mainMove: 22.0, extendedMove: 32.0 },
+      adverseMovement: { expected: 11.0, worst: 19.0 },
     },
   };
 
@@ -315,33 +329,50 @@ console.log('\n[11] TEST: All 43 RL Algorithms Autonomous Dynamic TP & SL Detect
   assert(allCorrectDirection, 'All 43 RL algorithms set TP in favorable direction and SL in adverse direction');
   assert(detectedDistances.size > 1, `TP distances vary dynamically based on algorithm mechanics (found ${detectedDistances.size} distinct distances, NO fixed ratio)`);
 
-  // Verify StrategyPerformanceEngine uses algorithm's automatically detected TP & SL
+  // Verify StrategyPerformanceEngine paper trading across multiple diverse RL algorithms
   const perfEngine = new StrategyPerformanceEngine(2500.0);
-  const testAlgo = algos[17]; // PPO (algo 18)
-  testAlgo.signal = 0.85;
-  testAlgo.confidence = 0.90;
-  const ppoSignal = testAlgo.getSignal(mockFeatures, mockContext);
+  const sampleAlgos = [
+    { key: 'rl_ppo', algo: algos[17], sigVal: 0.85, conf: 0.90 },
+    { key: 'rl_dqn', algo: algos[11], sigVal: -0.80, conf: 0.85 },
+    { key: 'rl_sac', algo: algos[20], sigVal: 0.75, conf: 0.80 },
+    { key: 'rl_qrdqn', algo: algos[34], sigVal: 0.70, conf: 0.75 },
+    { key: 'rl_cpo', algo: algos[41], sigVal: -0.65, conf: 0.70 },
+  ];
+
+  const ingestBatch = {};
+  const expectedSignals = {};
+  for (const item of sampleAlgos) {
+    item.algo.signal = item.sigVal;
+    item.algo.confidence = item.conf;
+    const sig = item.algo.getSignal(null, mockContext);
+    ingestBatch[item.key] = sig;
+    expectedSignals[item.key] = sig;
+  }
 
   perfEngine.ingestSignals({
-    signals: {
-      'rl_ppo': ppoSignal,
-    },
+    signals: ingestBatch,
     currentPrice: 2500.0,
     atr: 16.0,
     movementPrediction: mockContext.movementPrediction,
   });
 
-  const ppoTrade = perfEngine.openTrades['rl_ppo'];
-  assert(ppoTrade !== undefined, 'rl_ppo paper trade opened in StrategyPerformanceEngine');
-  assertClose(ppoTrade.predictedTarget, ppoSignal.tpPrice, 0.05, 'Paper trade target matches algorithm self-detected dynamic TP');
-  assertClose(ppoTrade.predictedStop, ppoSignal.slPrice, 0.05, 'Paper trade stop matches algorithm self-detected dynamic SL');
+  for (const item of sampleAlgos) {
+    const trade = perfEngine.openTrades[item.key];
+    const expSig = expectedSignals[item.key];
+    assert(trade !== undefined, `${item.key} paper trade successfully opened in StrategyPerformanceEngine`);
+    assertClose(trade.predictedTarget, expSig.tpPrice, 0.05, `${item.key} target strictly matches self-detected dynamic TP`);
+    assertClose(trade.predictedStop, expSig.slPrice, 0.05, `${item.key} stop strictly matches self-detected dynamic SL`);
+  }
 
-  // Verify AlgoCapitalBenchmarkEngine uses algorithm's automatically detected TP & SL
+  // Verify AlgoCapitalBenchmarkEngine: directional algorithms enter trades, neutral algorithms remain flat
   const benchmark = new AlgoCapitalBenchmarkEngine(2500.0);
   const signalsMap = {};
   for (const a of algos) {
     signalsMap[a.id] = a.getSignal(mockFeatures, mockContext);
   }
+  // Explicitly set an even-ID algorithm to completely neutral
+  signalsMap[10] = { signal: 0, direction: 0, conf: 0.5 };
+
   benchmark.tick(2500.0, signalsMap, mockContext.movementPrediction);
 
   const acc18 = benchmark.algoAccounts[18];
@@ -349,6 +380,10 @@ console.log('\n[11] TEST: All 43 RL Algorithms Autonomous Dynamic TP & SL Detect
   assert(acc18.activeTrade.tpPrice > 0, 'Arena paper trade has dynamic TP price');
   assert(acc18.activeTrade.slPrice > 0, 'Arena paper trade has dynamic SL price');
   assert(acc18.activeTrade.tpPct !== 0.20, 'Arena paper trade does NOT use legacy fixed 0.20% ratio');
+
+  // Verify neutral algorithm ID 10 did NOT open a trade (arbitrary even-ID BUY fallback eliminated)
+  const acc10 = benchmark.algoAccounts[10];
+  assert(acc10 && acc10.activeTrade === null, 'Neutral algorithm (ID 10) remained FLAT without arbitrary BUY entry');
 }
 
 console.log('─────────────────────────────────────────────────────────────────');

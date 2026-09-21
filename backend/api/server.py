@@ -229,7 +229,7 @@ class ProductionEngineContext:
         dfs = self.get_all_feature_dfs()
         price = self.candle_store.get_latest_price("1m")
         if price <= 0:
-            price = self.candle_store.get_latest_price("15m") or 3200.0
+            price = self.candle_store.get_latest_price("15m") or 0.0
 
         # Update metrics
         metrics_registry.set_price(price)
@@ -256,29 +256,10 @@ class ProductionEngineContext:
                 "timestamp": time.time(),
                 "signal": "HOLD",
                 "entry_price": float(price),
-                "dynamic_expected_range": {
-                    "low": round(price * 0.99, 2),
-                    "high": round(price * 1.01, 2),
-                },
-                "dynamic_take_profit": {
-                    "conservative_target": round(price * 1.002, 2),
-                    "conservative_prob": 0.75,
-                    "base_target": round(price * 1.005, 2),
-                    "base_prob": 0.50,
-                    "extended_target": round(price * 1.01, 2),
-                    "extended_prob": 0.25,
-                    "derivation_reason": "Warming up candle history",
-                },
-                "dynamic_exit_target": round(price * 1.005, 2),
-                "stop_loss": {
-                    "stop_price": round(price * 0.995, 2),
-                    "invalidation_level": round(price * 0.995, 2),
-                    "buffer_distance": round(price * 0.005, 2),
-                    "risk_distance": round(price * 0.005, 2),
-                    "risk_bps": 50.0,
-                    "stop_type": "WARM_UP_DEFAULT",
-                    "reason": "Engine warming up candles",
-                },
+                "dynamic_expected_range": None,
+                "dynamic_take_profit": None,
+                "dynamic_exit_target": None,
+                "stop_loss": None,
                 "confidence": 0.0,
                 "expected_move_magnitude": 0.0,
                 "expected_move_bps": 0.0,
@@ -550,7 +531,7 @@ def get_market(symbol: str = "ETHUSDT"):
 @app.get("/prediction/{symbol}", dependencies=[Depends(verify_api_token)])
 def get_prediction(symbol: str = "ETHUSDT"):
     dfs = engine_ctx.get_all_feature_dfs()
-    price = engine_ctx.candle_store.get_latest_price("1m") or 3200.0
+    price = engine_ctx.candle_store.get_latest_price("1m") or engine_ctx.candle_store.get_latest_price("15m") or 0.0
     primary_df = dfs.get("15m", dfs.get("5m"))
     move_dist = engine_ctx.expected_move_engine.estimate(primary_df, price, "UP")
     regime = engine_ctx.regime_detector.detect(dfs, price)
@@ -570,7 +551,7 @@ def get_prediction(symbol: str = "ETHUSDT"):
 @app.get("/strategies/{symbol}", dependencies=[Depends(verify_api_token)])
 def get_strategies(symbol: str = "ETHUSDT"):
     dfs = engine_ctx.get_all_feature_dfs()
-    price = engine_ctx.candle_store.get_latest_price("1m") or 3200.0
+    price = engine_ctx.candle_store.get_latest_price("1m") or engine_ctx.candle_store.get_latest_price("15m") or 0.0
     regime = engine_ctx.regime_detector.detect(dfs, price)
     weights = engine_ctx.weight_engine.compute_weights(regime.primary_regime)
 
@@ -677,16 +658,16 @@ def get_master_decision(symbol: str = "ETHUSDT"):
     best_overall = leaderboard[0]["strategy_id"] if (leaderboard and leaderboard[0].get("reliable")) else "NO RELIABLE WINNER YET"
     
     # Extract movement distribution from dictionary
-    entry = decision.get("price", 2500.0)
-    tp = decision.get("dynamic_take_profit", {})
-    sl = decision.get("stop_loss", {})
-    risk_check = decision.get("risk_check", {})
-    regime_dict = decision.get("regime", {})
+    entry = decision.get("price") or decision.get("entry_price") or 2500.0
+    tp = decision.get("dynamic_take_profit") or {}
+    sl = decision.get("stop_loss") or {}
+    risk_check = decision.get("risk_check") or {}
+    regime_dict = decision.get("regime") or {}
     regime_name = regime_dict.get("primary_regime", "TRENDING")
     
-    tp_target = tp.get("base_target", entry + 15.0)
-    tp_prob = tp.get("base_prob", 0.60)
-    sl_price = sl.get("stop_price", entry - 10.0)
+    tp_target = tp.get("base_target", entry + 15.0) if tp else None
+    tp_prob = tp.get("base_prob", 0.60) if tp else None
+    sl_price = sl.get("stop_price", entry - 10.0) if sl else None
     pos_size = risk_check.get("position_size", 0.10)
     max_risk = risk_check.get("max_risk_pct", 0.02)
     sig = decision.get("signal", "HOLD")
@@ -710,13 +691,13 @@ def get_master_decision(symbol: str = "ETHUSDT"):
         "movement": {
             "favorable": {
                 "selectedLabel": "BASE_MFE",
-                "selectedDistance": round(abs(tp_target - entry), 2),
+                "selectedDistance": round(abs(tp_target - entry), 2) if tp_target is not None else 0.0,
                 "selectedProbability": tp_prob,
                 "targetPrice": tp_target,
             },
             "adverse": {
-                "expectedDistance": round(abs(entry - sl_price), 2),
-                "selectedStopDistance": round(abs(entry - sl_price), 2),
+                "expectedDistance": round(abs(entry - sl_price), 2) if sl_price is not None else 0.0,
+                "selectedStopDistance": round(abs(entry - sl_price), 2) if sl_price is not None else 0.0,
                 "stopPrice": sl_price,
             }
         },
@@ -728,8 +709,8 @@ def get_master_decision(symbol: str = "ETHUSDT"):
         },
         "risk": {
             "maxRisk": max_risk,
-            "estimatedLoss": round(pos_size * abs(entry - sl_price), 2),
-            "expectedProfit": round(pos_size * abs(tp_target - entry), 2),
+            "estimatedLoss": round(pos_size * abs(entry - sl_price), 2) if sl_price is not None else 0.0,
+            "expectedProfit": round(pos_size * abs(tp_target - entry), 2) if tp_target is not None else 0.0,
             "drawdownState": "NORMAL" if not risk_check.get("circuit_breaker_active", False) else "CIRCUIT_BREAKER",
         },
         "contributingStrategies": contrib_strats,

@@ -111,7 +111,7 @@ class VolatilityStrategy(BaseStrategy):
             signal=signal,
             direction_score=direction_score,
             confidence=confidence,
-            expected_move=expected_move,
+            expected_move=abs(float(expected_move)),
             expected_high=expected_high,
             expected_low=expected_low,
             expected_horizon_minutes=15,

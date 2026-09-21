@@ -122,24 +122,32 @@ const FAILURE_DIAGNOSES = {
 // Automatically derives TP & SL from live market distribution and algorithm conviction
 // ═════════════════════════════════════════════════════════════════════
 
-export function detectDynamicProfileLevels(price, atr, s, conf, metrics = {}, mp = null, horizonMultiplier = 1.0, metricBonus = 0) {
-  const intensity = Math.abs(s);
-  const conviction = intensity * 0.75 + (conf || 0.5) * 0.5 + metricBonus;
-
-  // Dynamic market prediction baselines
-  const fav = Number(mp?.predictedMovement?.mainMove || mp?.favorable?.[0]?.distance || 0);
-  const adv = Number(mp?.adverseMovement?.expected || mp?.adverse?.expected || 0);
-
+export function detectDynamicProfileLevels(price, atr, s, conf, metrics = {}, mp = null, horizonMode = 'MAIN') {
   let up;
   let down;
 
-  if (fav > 0 && adv > 0) {
-    up = Math.max(atr * 0.25, +(fav * (0.85 + Math.min(1.0, conviction) * 0.35) * horizonMultiplier).toFixed(1));
-    down = Math.max(atr * 0.15, +(adv * (1.05 - Math.min(0.5, conviction * 0.3)) * horizonMultiplier).toFixed(1));
+  if (mp?.predictedMovement && mp?.adverseMovement) {
+    if (horizonMode === 'EXTENDED' || (horizonMode === 'MAIN' && (conf || 0.5) > 0.75)) {
+      up = Number(mp.predictedMovement.extendedMove || mp.predictedMovement.mainMove || atr || 15.0);
+      down = Number(mp.adverseMovement.worst || mp.adverseMovement.expected || atr || 10.0);
+    } else if (horizonMode === 'CONSERVATIVE' || (horizonMode === 'MAIN' && (conf || 0.5) < 0.40)) {
+      up = Number(mp.predictedMovement.conservativeMove || mp.predictedMovement.mainMove || atr || 15.0);
+      down = Number(mp.adverseMovement.expected || atr || 10.0);
+    } else {
+      up = Number(mp.predictedMovement.mainMove || atr || 15.0);
+      down = Number(mp.adverseMovement.expected || atr || 10.0);
+    }
+  } else if (mp?.favorable?.[0]?.distance && mp?.adverse?.expected) {
+    up = Number(mp.favorable[0].distance);
+    down = Number(mp.adverse.expected);
   } else {
-    up = Math.max(atr * 0.25, +(atr * (0.75 + conviction * 0.45) * horizonMultiplier).toFixed(1));
-    down = Math.max(atr * 0.15, +(atr * (0.45 + (1 - (conf || 0.5)) * 0.35) * horizonMultiplier).toFixed(1));
+    // Volatility baseline: 1 full ATR directly (no scaling coefficients)
+    up = atr > 0 ? atr : 15.0;
+    down = atr > 0 ? atr : 15.0;
   }
+
+  up = Math.round(Math.max(0.5, up) * 100) / 100;
+  down = Math.round(Math.max(0.5, down) * 100) / 100;
 
   return { up, down };
 }
@@ -149,259 +157,259 @@ export const ALGO_PROFILES = {
     // Markov Chain
     horizon: 'Scalp (1–3m)',
     basis: 'Markov Transition Drift P(s\'|s)',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 0.75, Math.abs(s) * 0.1),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'CONSERVATIVE'),
   },
   2: {
     // MDP
     horizon: 'Short (5–12m)',
     basis: 'Bellman Value Iteration Transition',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 0.85, 0.1),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'CONSERVATIVE'),
   },
   3: {
     // Rewards/Returns
     horizon: 'Momentum (8–18m)',
     basis: 'Discounted Return G_t Trajectory',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 0.95, Math.min(0.5, Math.abs(parseFloat(metrics.G_t) || 1.2) * 0.2)),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   4: {
     // Value Function V(s)
     horizon: 'Session Value (20–40m)',
     basis: 'State Value Expectation E[∑γ^t r_t]',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.0, Math.min(0.5, Math.abs(parseFloat(metrics.V_s) || 0.4) * 0.3)),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   5: {
     // Bellman Eq
     horizon: 'Breakout (10–25m)',
     basis: 'Bellman Optimality Margin Q* - V',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.05, conf * 0.2),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   6: {
     // Dynamic Prog
     horizon: 'Intraday (15–30m)',
     basis: 'Greedy Policy Improvement Step',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 0.95, 0.1),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   7: {
     // Monte Carlo
     horizon: 'Swing (1–2h)',
     basis: 'Empirical MC Rollout Variance',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.25, conf * 0.25),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'EXTENDED'),
   },
   8: {
     // TD Learning
     horizon: 'Microstructure (1–5m)',
     basis: 'TD Surprise δ_t = r + γV\' - V',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 0.75, Math.min(0.5, Math.abs(parseFloat(metrics.tdError) || 0.15) * 0.8)),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'CONSERVATIVE'),
   },
   9: {
     // SARSA
     horizon: 'Scalp (3–10m)',
     basis: 'On-Policy Q(s,a) with Exploration Drag',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 0.85, 0.1),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'CONSERVATIVE'),
   },
   10: {
     // Q-Learning
     horizon: 'Short (5–15m)',
     basis: 'Double Q* Action Gap Max_a Q(s,a)',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 0.95, Math.min(0.5, Math.abs(parseFloat(metrics.maxQ) || 0.7) * 0.25)),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'CONSERVATIVE'),
   },
   11: {
     // Exploration
     horizon: 'Expansion (10–30m)',
     basis: 'UCB-1 Optimism in Face of Uncertainty',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.2, 0.2),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'EXTENDED'),
   },
   12: {
     // DQN
     horizon: 'Intraday (15–45m)',
     basis: 'Deep Q-Network Layered FWD Values',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.05, conf * 0.2),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   13: {
     // Double/Dueling DQN
     horizon: 'Trend (30m–1h)',
     basis: 'Dueling Advantage Stream A(s,a)',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.15, conf * 0.25),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'EXTENDED'),
   },
   14: {
     // Policy Gradient
     horizon: 'Momentum (10–25m)',
     basis: 'REINFORCE Score Function ∇ln π(a|s)',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.0, 0.1),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   15: {
     // Actor-Critic
     horizon: 'Intraday (20–40m)',
     basis: 'Actor-Critic Baseline Advantage',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.05, 0.1),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   16: {
     // A2C/A3C
     horizon: 'Scalp/Intraday (15–30m)',
     basis: 'Parallel Async Gradient Consensus',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 0.95, 0.1),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'CONSERVATIVE'),
   },
   17: {
     // GAE
     horizon: 'Trend (30–60m)',
     basis: 'GAE-λ = 0.95 Advantage Horizon',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.15, Math.min(0.5, Math.abs(parseFloat(metrics.gaeAdv) || 0.5) * 0.3)),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'EXTENDED'),
   },
   18: {
     // PPO
     horizon: 'Core Strategy (15–45m)',
     basis: 'PPO Trust Region Clip Boundary [0.8, 1.2]',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.1, conf * 0.2),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   19: {
     // DDPG
     horizon: 'Active Trend (20–40m)',
     basis: 'Deterministic Actor Intensity μ(s)',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.05, 0.15),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   20: {
     // TD3
     horizon: 'Defensive Trend (30–60m)',
     basis: 'Twin Delayed Clipped Critic Min(Q1, Q2)',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.0, 0.1),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   21: {
     // SAC
     horizon: 'Volatile Expansion (15–30m)',
     basis: 'Max-Entropy Stochastic Policy Envelope',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.15, Math.min(0.4, Math.abs(parseFloat(metrics.entropy) || 0.25) * 0.5)),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'EXTENDED'),
   },
   22: {
     // Model-Based RL
     horizon: 'Forward Model (5–15m)',
     basis: '5-Step Transition Hallucination Path',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 0.95, 0.1),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'CONSERVATIVE'),
   },
   23: {
     // POMDP
     horizon: 'Regime Shift (30m–2h)',
     basis: 'Particle Filter Belief Transition',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.1, 0.15),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'EXTENDED'),
   },
   24: {
     // Offline RL
     horizon: 'Conservative (15–45m)',
     basis: 'CQL Supported Data Manifold',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 0.85, 0.05),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'CONSERVATIVE'),
   },
   25: {
     // Imitation Learn
     horizon: 'Institutional Mirror (20–60m)',
     basis: 'Cloned Pro Trader Profitable Excursion',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.05, 0.15),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   26: {
     // Multi-Agent RL
     horizon: 'Liquidity Sweep (5–15m)',
     basis: 'MM / Speculator Nash Clearing Price',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 0.8, 0.05),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'CONSERVATIVE'),
   },
   27: {
     // Hierarchical RL
     horizon: 'Macro Multi-Scale (45m–2h)',
     basis: 'Manager Sub-Goal Macro Distance',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.3, 0.25),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'EXTENDED'),
   },
   28: {
     // Distributional RL
     horizon: 'Distributional Quantile (15–45m)',
     basis: 'C51 Explicit Return Atom Integration',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.35, 0.25),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'EXTENDED'),
   },
   29: {
     // Risk-Sensitive RL
     horizon: 'Tail-Risk Protected (20–60m)',
     basis: 'CVaR 95% Tail Risk Shortfall Boundary',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 0.85, -0.1),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'CONSERVATIVE'),
   },
   30: {
     // Meta-RL
     horizon: 'Adaptive Context (10–30m)',
     basis: 'MAML Fast-Adapt Context Vector',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.0, Math.min(0.3, (parseFloat(metrics.adaptScore) || 50) / 200)),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   31: {
     // World Models
     horizon: 'Generative Trajectory (30m–1.5h)',
     basis: 'RSSM Latent Space 15-Step Rollout',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.4, 0.3),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'EXTENDED'),
   },
   32: {
     // Multi-Objective RL
     horizon: 'Balanced Horizon (15–45m)',
     basis: 'Pareto Optimal Sharpe/Return Frontier',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.05, 0.15),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   33: {
     // Safe RL
     horizon: 'Safety-Constrained (15–30m)',
     basis: 'Lagrangian Constraint Margin C(s) <= d',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 0.85, -0.05),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'CONSERVATIVE'),
   },
   34: {
     // Transformer RL
     horizon: 'Sequence Attention (30m–2h)',
     basis: 'TransformerXL Multi-Head Self-Attention',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.25, 0.2),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'EXTENDED'),
   },
   35: {
     // QR-DQN
     horizon: 'Distributional Scalp (3–10m)',
     basis: 'QR-DQN 51-Quantile Expectile Envelope',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 0.95, Math.abs((parseFloat(metrics.qBuyMean) || 0) - (parseFloat(metrics.qSellMean) || 0)) * 0.2),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'CONSERVATIVE'),
   },
   36: {
     // IQN
     horizon: 'Continuous Quantile (5–20m)',
     basis: 'Implicit Quantile Network Risk Distortion',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.0, Math.abs(parseFloat(metrics.quantileRiskSpread) || 0) * 0.2),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   37: {
     // FQF
     horizon: 'Fraction Quantile (10–30m)',
     basis: 'Fraction Proposal Network Adaptive Split',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.05, 0.15),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   38: {
     // IQL
     horizon: 'Offline Expectile (15–45m)',
     basis: 'In-Sample Asymmetric Expectile Loss',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.1, Math.max(Math.abs(parseFloat(metrics.advantageBuy) || 0), Math.abs(parseFloat(metrics.advantageSell) || 0)) * 0.2),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   39: {
     // CQL
     horizon: 'Conservative Offline (20–60m)',
     basis: 'OOD Log-Sum-Exp Conservative Penalty',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.05, 0.1),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   40: {
     // Decision Transformer
     horizon: 'Causal Transformer (15–60m)',
     basis: 'Autoregressive Return-to-Go Prompt Conditioning',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.2, Math.min(0.4, (parseFloat(metrics.targetReturnToGo) || 2.0) / 5.0)),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'EXTENDED'),
   },
   41: {
     // TD-MPC2
     horizon: 'Latent MPC (10–30m)',
     basis: 'Model-Predictive Path Integral Rollouts',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.15, Math.min(0.4, Math.abs(parseFloat(metrics.expectedTrajectoryReturn) || 0.5) * 0.25)),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'MAIN'),
   },
   42: {
     // CPO Lagrangian
     horizon: 'Safe Constrained (15–45m)',
     basis: 'Dual Cost Constraint Safe Boundary',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 0.9, -(parseFloat(metrics.lagrangianMultiplier) || 0.5) * 0.1),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'CONSERVATIVE'),
   },
   43: {
     // Option-Critic
     horizon: 'Hierarchical Options (30–90m)',
     basis: 'Intra-Option Policy & Termination Probability β',
-    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 1.25, (1.0 - (parseFloat(metrics.terminationProb) || 0.3)) * 0.25),
+    calc: (price, atr, s, conf, metrics, mp) => detectDynamicProfileLevels(price, atr, s, conf, metrics, mp, 'EXTENDED'),
   },
 };
 

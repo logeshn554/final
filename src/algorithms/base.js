@@ -48,45 +48,55 @@ export class BaseAlgorithm {
   getPolicyAdvantage() {
     const intensity = Math.abs(this.signal);
     const conf = typeof this.confidence === 'number' ? this.confidence : 0.5;
-    return clamp(intensity * 0.75 + conf * 0.5, 0.1, 1.5);
+    return (intensity + conf) / 2;
   }
 
   /**
    * Automatically detect and set dynamic TP (take profit) and SL (stop loss)
-   * ZERO FIXED RATIO: derived organically from the RL policy's internal advantage/state,
-   * live market volatility (ATR), and movement prediction distribution.
+   * ZERO FIXED RATIO: directly maps the algorithm's policy advantage and horizon
+   * to the empirical market movement prediction distribution percentiles (conservative, main, extended).
    */
   detectDynamicLevels(marketContext = {}) {
     const price = Number(marketContext.price || marketContext.currentPrice || 0);
-    const atr = Number(marketContext.atr || (price > 0 ? price * 0.0068 : 15.0));
     const mp = marketContext.movementPrediction || marketContext.movementDistribution || null;
+    const atr = Number(marketContext.atr || mp?.atr || 0);
     const direction = this.signal > 0.05 ? 1 : this.signal < -0.05 ? -1 : 0;
 
-    // Algorithm-specific conviction / advantage
+    // Algorithm-specific conviction / advantage from internal RL mechanics
     const conf = typeof this.confidence === 'number' ? this.confidence : 0.5;
     const policyAdvantage = typeof this.getPolicyAdvantage === 'function'
       ? this.getPolicyAdvantage()
-      : (Math.abs(this.signal) * 0.75 + conf * 0.5);
+      : (Math.abs(this.signal) + conf) / 2;
 
-    // Dynamic market baselines from distribution if available
-    const baseFav = Number(mp?.predictedMovement?.mainMove || mp?.favorable?.[0]?.distance || 0);
-    const baseAdv = Number(mp?.adverseMovement?.expected || mp?.adverse?.expected || 0);
-
-    // Automatic TP & SL distance detection: NO FIXED RATIO!
     let tpDist;
     let slDist;
 
-    if (baseFav > 0 && baseAdv > 0) {
-      // Dynamic scaling according to policy conviction: higher advantage captures more of favorable distribution
-      tpDist = Math.max(atr * 0.25, baseFav * (0.85 + Math.min(1.0, policyAdvantage) * 0.35));
-      slDist = Math.max(atr * 0.15, baseAdv * (1.05 - Math.min(0.5, policyAdvantage * 0.3)));
+    if (mp?.predictedMovement && mp?.adverseMovement) {
+      // Natural quantile selection directly from genuine movement prediction distribution
+      if (policyAdvantage >= 0.70 && mp.predictedMovement.extendedMove) {
+        tpDist = Number(mp.predictedMovement.extendedMove);
+      } else if (policyAdvantage <= 0.40 && mp.predictedMovement.conservativeMove) {
+        tpDist = Number(mp.predictedMovement.conservativeMove);
+      } else {
+        tpDist = Number(mp.predictedMovement.mainMove || mp.favorable?.[0]?.distance || atr);
+      }
+
+      if (conf >= 0.70 && mp.adverseMovement.expected) {
+        slDist = Number(mp.adverseMovement.expected);
+      } else {
+        slDist = Number(mp.adverseMovement.worst || mp.adverseMovement.expected || mp.adverse?.expected || atr);
+      }
+    } else if (mp?.favorable?.[0]?.distance && mp?.adverse?.expected) {
+      tpDist = Number(mp.favorable[0].distance);
+      slDist = Number(mp.adverse.expected);
     } else {
-      tpDist = Math.max(atr * 0.25, atr * (0.75 + policyAdvantage * 0.45));
-      slDist = Math.max(atr * 0.15, atr * (0.45 + (1 - conf) * 0.35));
+      // Direct volatility baseline: 1 full ATR
+      tpDist = atr;
+      slDist = atr;
     }
 
-    tpDist = Math.round(tpDist * 100) / 100;
-    slDist = Math.round(slDist * 100) / 100;
+    tpDist = Math.round(Math.max(0.5, tpDist) * 100) / 100;
+    slDist = Math.round(Math.max(0.5, slDist) * 100) / 100;
 
     let tpPrice = null;
     let slPrice = null;

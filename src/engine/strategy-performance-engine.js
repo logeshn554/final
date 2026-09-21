@@ -540,20 +540,16 @@ export class StrategyPerformanceEngine {
 
           if (hasEmpiricalData) {
             // Empirical target from observed average winning trade size (MFE proxy)
-            const empiricalTargetAtr = strat.avgWinnerUSD / curAtr;
+            const empiricalTargetUSD = strat.avgWinnerUSD;
             // Empirical stop from observed average losing trade size (MAE proxy)
-            const empiricalStopAtr = strat.avgLoserUSD / curAtr;
-            // Blend empirical with market movement prediction (60/40 empirical/market)
-            const marketFavMult = baseFavMove / Math.max(0.01, curAtr);
-            const marketAdvMult = baseAdvMove / Math.max(0.01, curAtr);
-            const blendedTargetAtr = (empiricalTargetAtr * 0.60 + marketFavMult * 0.40);
-            const blendedStopAtr = (empiricalStopAtr * 0.60 + marketAdvMult * 0.40);
-            targetDistance = Math.max(curAtr * 0.30, blendedTargetAtr * curAtr);
-            stopDistance = Math.max(curAtr * 0.20, blendedStopAtr * curAtr);
+            const empiricalStopUSD = strat.avgLoserUSD;
+            // Blend empirical with market movement prediction directly (ZERO fixed ratio multipliers)
+            targetDistance = Math.max(0.5, (empiricalTargetUSD * 0.60) + (baseFavMove * 0.40));
+            stopDistance = Math.max(0.5, (empiricalStopUSD * 0.60) + (baseAdvMove * 0.40));
           } else {
-            // Dynamic market movement prediction directly from distribution (NO fixed ratio multipliers)
+            // Dynamic market movement prediction directly from distribution (ZERO fixed ratio multipliers)
             targetDistance = baseFavMove > 0 ? baseFavMove : Math.max(0.5, curAtr);
-            stopDistance = baseAdvMove > 0 ? baseAdvMove : Math.max(0.5, curAtr * 0.7);
+            stopDistance = baseAdvMove > 0 ? baseAdvMove : Math.max(0.5, curAtr);
           }
 
           if (!stratTarget) {

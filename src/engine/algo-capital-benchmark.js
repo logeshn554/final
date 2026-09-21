@@ -122,13 +122,16 @@ export class AlgoCapitalBenchmarkEngine {
     this.lastPrice = currentPrice;
     this.historyTicks++;
 
-    const atr = movementPrediction?.atr || (currentPrice * 0.0068);
+    const atr = movementPrediction?.atr || 0;
+    this.lastSignals = signals;
 
     Object.keys(this.algoAccounts).forEach(id => {
       const acc = this.algoAccounts[id];
       const sig = signals[id] || { signal: 0, conf: 0.5 };
       const s = sig.signal !== undefined ? sig.signal : 0;
-      const isBuySignal = sig.direction > 0 || s > 0.02 || (s === 0 && (acc.id % 2 === 0));
+      const isBuy = sig.direction > 0 || s > 0.05;
+      const isSell = sig.direction < 0 || s < -0.05;
+      const hasDirection = isBuy || isSell;
 
       if (acc.activeTrade) {
         const t = acc.activeTrade;
@@ -148,18 +151,23 @@ export class AlgoCapitalBenchmarkEngine {
 
         // Ensure active trade has autonomous dynamic excursion levels (ZERO fixed ratios)
         if (!t.tpDistance) {
-          const profile = ALGO_PROFILES[acc.id] || ALGO_PROFILES[1];
-          const { up, down } = profile.calc(t.entryPrice, atr, s, sig.conf || 0.5, sig.metrics || {}, movementPrediction);
-          t.tpDistance = up;
-          t.slDistance = down;
-          t.tpPrice = +(t.isBuy ? t.entryPrice + up : t.entryPrice - up).toFixed(2);
-          t.slPrice = +(t.isBuy ? t.entryPrice - down : t.entryPrice + down).toFixed(2);
-          t.tpPct = +((up / t.entryPrice) * 100).toFixed(2);
-          t.slPct = +((down / t.entryPrice) * 100).toFixed(2);
-          t.horizon = profile.horizon;
-          t.basis = profile.basis;
-          t.tpAreaText = t.isBuy ? `BUY TP (+$${up.toFixed(1)} pts)` : `SELL TP (-$${up.toFixed(1)} pts)`;
-          t.slAreaText = t.isBuy ? `BUY SL (-$${down.toFixed(1)} pts)` : `SELL SL (+$${down.toFixed(1)} pts)`;
+          if (sig.tpPrice && sig.slPrice && sig.tpDistance > 0 && sig.slDistance > 0) {
+            t.tpDistance = sig.tpDistance;
+            t.slDistance = sig.slDistance;
+            t.tpPrice = sig.tpPrice;
+            t.slPrice = sig.slPrice;
+          } else {
+            const profile = ALGO_PROFILES[acc.id] || ALGO_PROFILES[1];
+            const { up, down } = profile.calc(t.entryPrice, atr, s, sig.conf || 0.5, sig.metrics || {}, movementPrediction);
+            t.tpDistance = up;
+            t.slDistance = down;
+            t.tpPrice = +(t.isBuy ? t.entryPrice + up : t.entryPrice - up).toFixed(2);
+            t.slPrice = +(t.isBuy ? t.entryPrice - down : t.entryPrice + down).toFixed(2);
+          }
+          t.tpPct = +((t.tpDistance / t.entryPrice) * 100).toFixed(2);
+          t.slPct = +((t.slDistance / t.entryPrice) * 100).toFixed(2);
+          t.tpAreaText = t.isBuy ? `BUY TP (+$${t.tpDistance.toFixed(1)} pts)` : `SELL TP (-$${t.tpDistance.toFixed(1)} pts)`;
+          t.slAreaText = t.isBuy ? `BUY SL (-$${t.slDistance.toFixed(1)} pts)` : `SELL SL (+$${t.slDistance.toFixed(1)} pts)`;
         }
 
         let isClosed = false;
@@ -254,8 +262,11 @@ export class AlgoCapitalBenchmarkEngine {
         }
 
       } else {
-        // FLAT: Open a new $10 position in the direction of the signal
-        const isBuy = isBuySignal;
+        // FLAT: Only enter a new $10 position if the algorithm emits genuine directional conviction.
+        // ZERO arbitrary BUY fallback: neutral/flat algorithms MUST remain flat.
+        if (!hasDirection) {
+          return;
+        }
         const entryPrice = currentPrice;
         const sizeETH = +(10.00 / entryPrice).toFixed(6); // $10.00 worth of ETH
 
@@ -320,22 +331,37 @@ export class AlgoCapitalBenchmarkEngine {
 
   /**
    * Fast micro-simulate ticks for immediate testing (+10T button)
+   * Prioritizes real historical prices and real algorithm signals over synthetic simulation
    * @param {number} steps Number of ticks to step forward
    * @param {number} currentPrice Starting ETH price
+   * @param {Object} [movementPrediction] Live movement prediction distribution
+   * @param {Array<number>} [priceHistory] Real market price history array
+   * @param {Object} [algorithmSignals] Genuine live signals from all algorithms
    */
-  fastSimulate(steps = 10, currentPrice = 0, movementPrediction = null) {
+  fastSimulate(steps = 10, currentPrice = 0, movementPrediction = null, priceHistory = null, algorithmSignals = null) {
     let p = Number(currentPrice) || this.lastPrice || 0;
     if (p <= 0) return this.getReport();
-    for (let i = 0; i < steps; i++) {
-      // Micro realistic fluctuation between -0.06% and +0.06%
-      const delta = (Math.random() - 0.485) * 0.0006;
-      p = +(p * (1 + delta)).toFixed(2);
-      const signals = {};
-      Object.keys(this.algoAccounts).forEach(id => {
-        const dir = Math.random() > 0.46 ? 1 : -1;
-        signals[id] = { signal: dir * 0.5, direction: dir, conf: 0.75 };
-      });
-      this.tick(p, signals, movementPrediction);
+
+    const sigs = algorithmSignals || this.lastSignals || {};
+
+    if (Array.isArray(priceHistory) && priceHistory.length >= 2) {
+      // Replay real observed historical prices
+      const slice = priceHistory.slice(-Math.min(priceHistory.length, steps + 1));
+      for (let i = 1; i < slice.length; i++) {
+        const histPrice = Number(slice[i]);
+        if (histPrice > 0) {
+          this.tick(histPrice, sigs, movementPrediction);
+        }
+      }
+    } else {
+      // Deterministic tick replay using movement prediction distribution without synthetic random direction flips
+      const stepDelta = movementPrediction?.predictedMovement?.mainMove
+        ? (movementPrediction.predictedMovement.mainMove / Math.max(1, steps * 4))
+        : (p * 0.0002);
+      for (let i = 0; i < steps; i++) {
+        p = +(p + (i % 2 === 0 ? stepDelta : -stepDelta)).toFixed(2);
+        this.tick(p, sigs, movementPrediction);
+      }
     }
     this.saveToStorage();
     return this.getReport();
