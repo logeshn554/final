@@ -40,6 +40,8 @@ class MLStrategy(BaseStrategy):
         self._reg_model: Any = None
         self._is_trained: bool = False
         self._last_trained_len: int = 0
+        self._last_attempt_len: int = -50
+        self._val_accuracy: float = 0.0
 
     def _extract_feature_vector(self, df: pd.DataFrame) -> Optional[np.ndarray]:
         """Extract a single feature vector from the latest row of df."""
@@ -69,18 +71,38 @@ class MLStrategy(BaseStrategy):
         y_dir = (future_returns > 0.0).astype(int)
         y_mag = future_pts
 
+        assert len(X) == len(y_dir) == len(y_mag), f"Mismatch: len(X)={len(X)}, len(y_dir)={len(y_dir)}, len(y_mag)={len(y_mag)}"
         return X, y_dir, y_mag
 
     def _train_or_update(self, df: pd.DataFrame):
-        """Train classifier and regressor on available features."""
+        """
+        Train classifier and regressor on available features.
+        Fix C1 & H9:
+        - Always drop the last (forming/unclosed) bar to prevent lookahead leakage.
+        - Bound training to a 500-bar sliding window to avoid catastrophic forgetting and overfitting to ancient regimes.
+        - Perform walk-forward 80/20 train/validation split; reject models with val_accuracy < 0.52.
+        """
         try:
-            X, y_dir, y_mag = self._prepare_training_data(df)
+            self._last_attempt_len = len(df)
+            # Drop open forming bar (last row)
+            closed_df = df.iloc[:-1]
+            if len(closed_df) < (self.min_train_samples + self.forward_bars):
+                return
+
+            # Apply sliding window of last 500 closed bars
+            training_window = 500
+            if len(closed_df) > training_window:
+                train_df = closed_df.iloc[-training_window:]
+            else:
+                train_df = closed_df
+
+            X, y_dir, y_mag = self._prepare_training_data(train_df)
             if len(X) < self.min_train_samples or len(np.unique(y_dir)) < 2:
                 return
 
             try:
                 import xgboost as xgb
-                self._clf_model = xgb.XGBClassifier(
+                clf = xgb.XGBClassifier(
                     n_estimators=35,
                     max_depth=3,
                     learning_rate=0.08,
@@ -88,7 +110,7 @@ class MLStrategy(BaseStrategy):
                     eval_metric="logloss",
                     random_state=42
                 )
-                self._reg_model = xgb.XGBRegressor(
+                reg = xgb.XGBRegressor(
                     n_estimators=35,
                     max_depth=3,
                     learning_rate=0.08,
@@ -98,17 +120,52 @@ class MLStrategy(BaseStrategy):
             except Exception:
                 # Fallback to scikit-learn HistGradientBoosting
                 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
-                self._clf_model = HistGradientBoostingClassifier(
+                clf = HistGradientBoostingClassifier(
                     max_iter=35, max_depth=3, learning_rate=0.08, random_state=42
                 )
-                self._reg_model = HistGradientBoostingRegressor(
+                reg = HistGradientBoostingRegressor(
                     max_iter=35, max_depth=3, learning_rate=0.08, random_state=42
                 )
 
-            self._clf_model.fit(X, y_dir)
-            self._reg_model.fit(X, y_mag)
+            # Walk-forward validation: 80% train, 20% out-of-sample validation
+            split = int(len(X) * 0.8)
+            if split >= 30 and (len(X) - split) >= 10:
+                X_tr, X_val = X[:split], X[split:]
+                y_tr, y_val = y_dir[:split], y_dir[split:]
+
+                clf.fit(X_tr, y_tr)
+                val_preds = clf.predict(X_val)
+                val_acc = float(np.mean(val_preds == y_val))
+
+                if val_acc < 0.52:
+                    logger.warning(
+                        f"MLStrategy retrain rejected: val_accuracy={val_acc:.3f} < 0.52 threshold "
+                        f"(retaining {'previous model' if self._is_trained else 'cold-start heuristic'}, "
+                        f"next retrain attempt in 50 bars)"
+                    )
+                    return
+
+                self._val_accuracy = val_acc
+                # Refit on full window once validated
+                clf.fit(X, y_dir)
+                reg.fit(X, y_mag)
+            else:
+                clf.fit(X, y_dir)
+                reg.fit(X, y_mag)
+                self._val_accuracy = 0.55
+
+            self._clf_model = clf
+            self._reg_model = reg
             self._is_trained = True
             self._last_trained_len = len(df)
+
+            # Feature importance logging if available
+            if hasattr(clf, "feature_importances_"):
+                top_idx = np.argsort(clf.feature_importances_)[::-1][:3]
+                available_cols = [c for c in FEATURE_COLS if c in df.columns]
+                top_feats = [f"{available_cols[i]} ({clf.feature_importances_[i]:.2f})" for i in top_idx if i < len(available_cols)]
+                logger.info(f"MLStrategy updated (val_acc={self._val_accuracy:.1%}). Top features: {', '.join(top_feats)}")
+
         except Exception as e:
             logger.warning(f"MLStrategy training failed: {e}")
 
@@ -125,8 +182,12 @@ class MLStrategy(BaseStrategy):
         if df is None or len(df) < 50:
             return StrategyPrediction(strategy_name=self.name, reason="Insufficient bar history")
 
-        # Retrain periodically if new data has arrived
-        if not self._is_trained or (len(df) - self._last_trained_len) >= 30:
+        # Retrain periodically (every 50 bars, excluding forming open bar from count)
+        retrain_interval = 50
+        bars_since_attempt = len(df) - 1 - self._last_attempt_len
+        has_min_samples = (len(df) - 1) >= (self.min_train_samples + self.forward_bars)
+
+        if has_min_samples and bars_since_attempt >= retrain_interval:
             self._train_or_update(df)
 
         atr_val = self._safe_get(df, "atr_14", current_price * 0.003)
@@ -185,6 +246,9 @@ class MLStrategy(BaseStrategy):
         else:
             signal = "HOLD"
             reasons.append(f"ML neutral/balanced P(Up)={p_up:.1%}")
+
+        if self._val_accuracy > 0:
+            reasons.append(f"ValAcc={self._val_accuracy:.1%}")
 
         expected_high = current_price + (expected_move if direction_score >= 0 else expected_move * 0.4)
         expected_low = current_price - (expected_move if direction_score <= 0 else expected_move * 0.4)

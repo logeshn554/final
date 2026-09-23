@@ -29,6 +29,28 @@ class SizingResult:
         }
 
 
+class ConfidenceToWinRateMapper:
+    """Lookup table of {confidence_bucket -> empirical_win_rate} populated from backtests."""
+
+    DEFAULT_BUCKETS = {
+        (0.0, 0.45): 0.40,
+        (0.45, 0.55): 0.45,
+        (0.55, 0.65): 0.50,
+        (0.65, 0.75): 0.55,
+        (0.75, 0.85): 0.60,
+        (0.85, 1.01): 0.65,
+    }
+
+    def __init__(self, mapping: dict[tuple[float, float], float] | None = None):
+        self.mapping = mapping or self.DEFAULT_BUCKETS
+
+    def map_confidence(self, confidence: float) -> float:
+        for (low, high), rate in self.mapping.items():
+            if low <= confidence < high:
+                return rate
+        return 0.45
+
+
 class DynamicPositionSizer:
     """Computes dynamic position sizing using fractional Kelly and volatility scaling."""
 
@@ -36,11 +58,12 @@ class DynamicPositionSizer:
         self,
         fractional_kelly: float = 0.25,
         max_position_pct: float = 0.30,
-        max_risk_per_trade_pct: float = 0.02,
+        max_risk_per_trade_pct: float = 0.01,
     ):
         self.fractional_kelly = fractional_kelly
         self.max_position_pct = max_position_pct
         self.max_risk_per_trade_pct = max_risk_per_trade_pct
+        self.win_rate_mapper = ConfidenceToWinRateMapper()
 
     def calculate_size(
         self,
@@ -50,6 +73,7 @@ class DynamicPositionSizer:
         target_price: float,
         confidence: float,
         vol_expansion: float = 1.0,
+        historical_win_rate: float | None = None,
     ) -> SizingResult:
         if account_balance <= 0 or entry_price <= 0:
             return SizingResult(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, "Invalid account balance or entry price")
@@ -63,8 +87,9 @@ class DynamicPositionSizer:
         # Dynamic payoff ratio b = gain / loss
         b = target_dist / risk_dist
 
-        # Calibrated win probability p from confidence
-        p = float(np.clip(confidence, 0.35, 0.85))
+        # Empirical win probability p (calibrated vs raw confidence)
+        p = historical_win_rate if historical_win_rate is not None else 0.45
+        p = float(np.clip(p, 0.30, 0.75))  # never assume >75% win rate
         q = 1.0 - p
 
         # Full Kelly Criterion: f* = (p * b - q) / b
@@ -97,6 +122,7 @@ class DynamicPositionSizer:
             f"Fractional Kelly={self.fractional_kelly:.2f}x (Full Kelly={full_kelly:.1%}, Payoff b={b:.2f}, P(Win)={p:.1%}), "
             f"Vol scale={vol_factor:.2f}x. Risk capped at {self.max_risk_per_trade_pct:.1%} of equity."
         )
+
 
         return SizingResult(
             position_pct=pos_pct,

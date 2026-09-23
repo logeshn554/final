@@ -122,6 +122,7 @@ class MeanReversionStrategy(BaseStrategy):
         elif rsi_6 > 85:
             score -= 0.3
             reasons.append(f"{tf}: RSI(6) extreme overbought ({rsi_6:.1f})")
+        score = float(np.clip(score, -1.0, 1.0))
 
         # 2. Bollinger %B
         bb_pct = self._safe_get(df, "bb_pct_b", 0.5)
@@ -131,6 +132,7 @@ class MeanReversionStrategy(BaseStrategy):
         elif bb_pct > 0.95:
             score -= 0.35
             reasons.append(f"{tf}: price above upper BB")
+        score = float(np.clip(score, -1.0, 1.0))
 
         # 3. Z-score
         z = self._safe_get(df, "z_score_20", 0)
@@ -142,6 +144,7 @@ class MeanReversionStrategy(BaseStrategy):
             reasons.append(f"{tf}: z-score={z:.2f} (extreme high)")
         elif abs(z) > 1.5:
             score += np.sign(-z) * 0.15
+        score = float(np.clip(score, -1.0, 1.0))
 
         # 4. Distance from VWAP
         dist_vwap = self._safe_get(df, "price_vs_vwap", 0)
@@ -169,10 +172,15 @@ class MeanReversionStrategy(BaseStrategy):
         elif cci_val > 150:
             score -= 0.2
 
-        # 8. Volume exhaustion: declining volume at extremes
+        # Clip score to [-1, 1] first
+        score = float(np.clip(score, -1.0, 1.0))
+
+        # 8. Volume exhaustion: small additive signal rather than multiplicative
         rel_vol = self._safe_get(df, "rel_volume", 1.0)
         if rel_vol < 0.5 and abs(score) > 0.3:
-            score *= 1.2  # low volume at extremes = exhaustion
-            reasons.append(f"{tf}: low volume exhaustion (relVol={rel_vol:.2f})")
+            exhaustion_bonus = float(np.sign(score) * 0.10)   # max 10% additive boost
+            score = float(np.clip(score + exhaustion_bonus, -1.0, 1.0))
+            reasons.append(f"{tf}: low volume exhaustion bonus (relVol={rel_vol:.2f})")
 
-        return np.clip(score, -1.0, 1.0)
+        return score
+

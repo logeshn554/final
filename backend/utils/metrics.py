@@ -7,6 +7,21 @@ import time
 from typing import Dict, Any
 
 
+try:
+    from prometheus_client import Counter, Histogram, Gauge, generate_latest, REGISTRY
+    signals_total = Counter("trading_signals_total", "Total signals", ["signal", "regime"])
+    trades_total = Counter("trading_trades_total", "Total trades", ["direction", "exit_reason"])
+    trade_pnl = Histogram("trading_trade_pnl_usd", "Trade PnL", buckets=[-500, -100, -50, 0, 50, 100, 500])
+    account_balance = Gauge("trading_account_balance_usd", "Current account balance")
+    ws_connected = Gauge("trading_ws_connected", "WebSocket connected")
+except Exception:
+    signals_total = None
+    trades_total = None
+    trade_pnl = None
+    account_balance = None
+    ws_connected = None
+
+
 class MetricsRegistry:
     """Lightweight in-memory Prometheus metrics exporter."""
 
@@ -38,6 +53,13 @@ class MetricsRegistry:
 
     def generate_prometheus_text(self, symbol: str = "ETHUSDT") -> str:
         """Outputs Prometheus exposition format."""
+        prom_text = ""
+        try:
+            if "generate_latest" in globals() and generate_latest:
+                prom_text = generate_latest().decode("utf-8")
+        except Exception:
+            prom_text = ""
+
         uptime = time.time() - self.start_time
         avg_latency = sum(self.inference_latencies) / len(self.inference_latencies) if self.inference_latencies else 0.0
 
@@ -72,7 +94,9 @@ class MetricsRegistry:
         for tf, count in self.candle_counts.items():
             lines.append(f'engine_candles_total{{timeframe="{tf}"}} {count}')
 
-        return "\n".join(lines) + "\n"
+        custom_text = "\n".join(lines) + "\n"
+        return prom_text + "\n" + custom_text if prom_text else custom_text
 
 
 metrics_registry = MetricsRegistry()
+

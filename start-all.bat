@@ -9,6 +9,11 @@ echo.
 echo [1/2] Starting Python Quantitative Backend on http://127.0.0.1:8000...
 start "Python Quant Engine (ETHUSDT)" cmd /k "cd backend && python run.py api"
 
+echo.
+echo Initializing Python engine and live Delta Exchange feeds (waiting 6s)...
+timeout /t 6 /nobreak > nul
+
+echo.
 echo [2/2] Starting Frontend Dashboard on http://localhost:3000...
 start "Frontend Dashboard (Vite)" cmd /k "npm run dev"
 

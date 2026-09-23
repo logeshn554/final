@@ -111,12 +111,21 @@ class EnsembleAggregator:
             agreement_count = len(hold_votes)
             contributing = hold_votes
 
-        # Agreement bonus: if 4 or 5 strategies align, boost confidence & move
-        if agreement_count >= 4:
-            calibrated_conf = min(calibrated_conf * 1.25, 0.95)
-            ensemble_dir = np.clip(ensemble_dir * 1.15, -1.0, 1.0)
+        # Soft additive agreement bonus (avoids overconfidence spiral)
+        agreement_ratio = agreement_count / max(len(predictions), 1)
+        if agreement_ratio >= 0.8 and not conflict_detected:
+            bonus = (agreement_ratio - 0.8) * 0.10   # max +2% bonus
+            calibrated_conf = min(calibrated_conf + bonus, 0.90)
+
+        # Correlation penalty: strategies share indicators (ADX, EMA, RSI) so reduce confidence for non-independence
+        if len(predictions) >= 4 and agreement_count >= 4:
+            calibrated_conf = max(0.10, calibrated_conf - 0.05)
+
+        # Hard cap calibrated confidence at 0.85 to prevent Kelly overallocation
+        calibrated_conf = min(calibrated_conf, 0.85)
 
         # 6. Aggregate expected move and horizons
+
         valid_moves = [p.expected_move for p in predictions.values() if p.expected_move > 0]
         expected_move = float(np.average(valid_moves, weights=[weights.get(name, 0.2) for name in predictions if predictions[name].expected_move > 0])) if valid_moves else current_price * 0.005
 

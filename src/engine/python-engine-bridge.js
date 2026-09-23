@@ -16,8 +16,14 @@ export class PythonEngineBridge {
     ].filter(Boolean);
 
     this.restCandidates = [
+      'http://localhost:8000/signal',
+      'http://localhost:8000/signal/ETHUSD',
       'http://localhost:8000/signal/ETHUSDT',
+      'http://127.0.0.1:8000/signal',
+      'http://127.0.0.1:8000/signal/ETHUSD',
       'http://127.0.0.1:8000/signal/ETHUSDT',
+      '/api/signal',
+      '/api/signal/ETHUSD',
       '/api/signal/ETHUSDT',
     ];
 
@@ -31,6 +37,7 @@ export class PythonEngineBridge {
     this.lastLatencyMs = 0;
     this.tickCount = 0;
     this.onDecisionCallback = options.onDecision || null;
+    this.authToken = options.authToken || 'delta_live_trade_2026_authorized';
   }
 
   connect() {
@@ -110,7 +117,14 @@ export class PythonEngineBridge {
       const url = this.restCandidates[(this.restIndex + i) % this.restCandidates.length];
       try {
         const t0 = performance.now();
-        const resp = await fetch(url, { signal: AbortSignal.timeout(2500) });
+        const headers = {};
+        if (this.authToken) {
+          headers['Authorization'] = `Bearer ${this.authToken}`;
+        }
+        const resp = await fetch(url, {
+          headers,
+          signal: AbortSignal.timeout(2500)
+        });
         if (resp.ok) {
           const decision = await resp.json();
           this.restIndex = (this.restIndex + i) % this.restCandidates.length;
@@ -125,6 +139,67 @@ export class PythonEngineBridge {
       }
     }
     this._updateStateStatus('offline');
+  }
+
+  async executeMasterTrade(params = {}) {
+    const endpoints = [
+      'http://localhost:8000/api/v1/trade/execute',
+      'http://127.0.0.1:8000/api/v1/trade/execute',
+      '/api/v1/trade/execute',
+    ];
+    for (const url of endpoints) {
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (this.authToken) headers['Authorization'] = `Bearer ${this.authToken}`;
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(params),
+          signal: AbortSignal.timeout(6000),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          log('Delta Live Execution', `Master trade executed on Delta: ${JSON.stringify(data.trade)}`, 'success');
+          if (data.delta_trades_count !== undefined) {
+            STATE.deltaTradesCount = data.delta_trades_count;
+            STATE.deltaTradesLimit = data.delta_trades_limit || 5;
+            STATE.deltaTradesRemaining = data.delta_trades_remaining ?? Math.max(0, 5 - data.delta_trades_count);
+            STATE.deltaLimitReached = Boolean(data.delta_limit_reached || data.delta_trades_count >= 5);
+          }
+          return data;
+        }
+      } catch (e) {
+        // try next endpoint
+      }
+    }
+    return null;
+  }
+
+  async closeMasterTrade() {
+    const endpoints = [
+      'http://localhost:8000/api/v1/trade/close',
+      'http://127.0.0.1:8000/api/v1/trade/close',
+      '/api/v1/trade/close',
+    ];
+    for (const url of endpoints) {
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (this.authToken) headers['Authorization'] = `Bearer ${this.authToken}`;
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers,
+          signal: AbortSignal.timeout(6000),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          log('Delta Live Execution', `Position closed on Delta Exchange & TradeManager: ${JSON.stringify(data)}`, 'info');
+          return data;
+        }
+      } catch (e) {
+        // try next endpoint
+      }
+    }
+    return null;
   }
 
   async refresh() {
@@ -150,7 +225,7 @@ export class PythonEngineBridge {
   }
 
   _handleDecision(decision) {
-    if (!decision || decision.symbol !== 'ETHUSDT') return;
+    if (!decision || (decision.symbol !== 'ETHUSDT' && decision.symbol !== 'ETHUSD')) return;
     this.latestDecision = decision;
 
     if (!STATE.pythonEngine) {
@@ -169,6 +244,13 @@ export class PythonEngineBridge {
       STATE.pythonEngine.latencyMs = this.lastLatencyMs;
       STATE.pythonEngine.tickCount = this.tickCount;
       STATE.pythonEngine.decision = decision;
+    }
+
+    if (decision.delta_trades_count !== undefined) {
+      STATE.deltaTradesCount = decision.delta_trades_count;
+      STATE.deltaTradesLimit = decision.delta_trades_limit || 5;
+      STATE.deltaTradesRemaining = decision.delta_trades_remaining ?? Math.max(0, 5 - decision.delta_trades_count);
+      STATE.deltaLimitReached = Boolean(decision.delta_limit_reached || decision.delta_trades_count >= 5);
     }
 
     if (this.onDecisionCallback) {

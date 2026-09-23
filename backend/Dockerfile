@@ -8,8 +8,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+COPY requirements.txt requirements.lock* ./
+RUN if [ -f requirements.lock ]; then pip install --no-cache-dir --user -r requirements.lock; else pip install --no-cache-dir --user -r requirements.txt; fi
+
 
 # Final minimal runtime container
 FROM python:3.11-slim as runtime

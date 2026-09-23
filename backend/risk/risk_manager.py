@@ -5,6 +5,10 @@ Risk Manager — Portfolio level protection, circuit breakers, and exposure limi
 from __future__ import annotations
 from dataclasses import dataclass
 import time
+import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -40,22 +44,43 @@ class PortfolioRiskManager:
         daily_loss_limit_pct: float = 0.04,
         max_consecutive_losses: int = 4,
         cooldown_seconds: int = 1800,
+        initial_balance: float = 10000.0,
     ):
         self.max_drawdown_pct = max_drawdown_pct
         self.daily_loss_limit_pct = daily_loss_limit_pct
         self.max_consecutive_losses = max_consecutive_losses
         self.cooldown_seconds = cooldown_seconds
 
-        self.peak_balance: float = 10000.0
-        self.day_start_balance: float = 10000.0
+        self.peak_balance: float = initial_balance
+        self.day_start_balance: float = initial_balance
         self.consecutive_losses: int = 0
         self.last_loss_time: float = 0.0
+        self._current_day: str = datetime.date.today().isoformat()
+
+
+    def _maybe_reset_day(self, current_balance: float):
+        """Reset daily tracking benchmarks when calendar date rolls over (C4)."""
+        today = datetime.date.today().isoformat()
+        if today != self._current_day:
+            self._current_day = today
+            self.day_start_balance = current_balance
+            self.consecutive_losses = 0
+            logger.info(f"New trading day {today}. Day-start balance reset to {current_balance:.2f}")
+
+    def reset_for_session(self, balance: float):
+        """Explicitly reset state for a new session or test injection."""
+        self.day_start_balance = balance
+        self.peak_balance = max(self.peak_balance, balance)
+        self.consecutive_losses = 0
+        self._current_day = datetime.date.today().isoformat()
 
     def update_balance(self, current_balance: float):
+        self._maybe_reset_day(current_balance)
         if current_balance > self.peak_balance:
             self.peak_balance = current_balance
 
     def record_trade_result(self, profit_usd: float, current_balance: float):
+        self._maybe_reset_day(current_balance)
         self.update_balance(current_balance)
         if profit_usd < 0:
             self.consecutive_losses += 1
@@ -64,6 +89,7 @@ class PortfolioRiskManager:
             self.consecutive_losses = 0
 
     def check_risk(self, current_balance: float) -> RiskStatus:
+        self._maybe_reset_day(current_balance)
         self.update_balance(current_balance)
 
         # Drawdown calculation

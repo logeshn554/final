@@ -31,6 +31,20 @@ class StopPlacement:
         }
 
 
+REGIME_LOOKBACK = {
+    "STRONG_UPTREND": 8,
+    "WEAK_UPTREND": 12,
+    "SIDEWAYS": 20,
+    "MEAN_REVERTING": 20,
+    "STRONG_DOWNTREND": 8,
+    "WEAK_DOWNTREND": 12,
+    "BREAKOUT": 5,
+    "BREAKDOWN": 5,
+    "HIGH_VOL": 10,
+    "TRANSITION": 15,
+}
+
+
 class DynamicStopEngine:
     """Calculates stop-loss strictly based on market structure and volatility buffer."""
 
@@ -42,6 +56,7 @@ class DynamicStopEngine:
         support_levels: list[float],
         resistance_levels: list[float],
         mae_invalidation: float,
+        regime: str = "SIDEWAYS",
     ) -> StopPlacement:
         is_buy = signal.upper() in ("BUY", "LONG")
         is_sell = signal.upper() in ("SELL", "SHORT")
@@ -60,6 +75,9 @@ class DynamicStopEngine:
                 reason="No active direction for stop placement",
             )
 
+        # Dynamic lookback based on regime
+        lookback = REGIME_LOOKBACK.get(regime, 15)
+
         # Volatility buffer (0.35x ATR)
         atr_col = "atr_14" if "atr_14" in df.columns else None
         if atr_col and len(df) > 0 and pd.notna(df[atr_col].iloc[-1]):
@@ -72,9 +90,9 @@ class DynamicStopEngine:
             # 1. Look for nearest structural swing low or support level below current price
             structural_levels = [s for s in support_levels if s < current_price]
 
-            # Also check recent 20-bar lowest low
-            if "low" in df.columns and len(df) >= 15:
-                recent_swing_low = float(df["low"].iloc[-20:].min())
+            # Dynamic regime-adaptive swing low
+            if "low" in df.columns and len(df) >= 5:
+                recent_swing_low = float(df["low"].iloc[-lookback:].min())
                 structural_levels.append(recent_swing_low)
 
             if structural_levels:
@@ -86,7 +104,7 @@ class DynamicStopEngine:
                     invalidation = max(lower_levels) if lower_levels else (current_price - max(mae_invalidation, atr_val))
                 stop_price = invalidation - buffer
                 stop_type = "SWING_LOW_SUPPORT"
-                reason = f"Structural stop below support {invalidation:.1f} with {buffer:.1f} ATR buffer"
+                reason = f"Structural stop below support {invalidation:.1f} with {buffer:.1f} ATR buffer (lookback={lookback})"
             else:
                 # Volatility and empirical MAE fallback
                 risk_dist = max(mae_invalidation, atr_val * 1.5)
@@ -100,8 +118,9 @@ class DynamicStopEngine:
         else:  # is_sell
             structural_levels = [r for r in resistance_levels if r > current_price]
 
-            if "high" in df.columns and len(df) >= 15:
-                recent_swing_high = float(df["high"].iloc[-20:].max())
+            # Dynamic regime-adaptive swing high
+            if "high" in df.columns and len(df) >= 5:
+                recent_swing_high = float(df["high"].iloc[-lookback:].max())
                 structural_levels.append(recent_swing_high)
 
             if structural_levels:
@@ -111,7 +130,7 @@ class DynamicStopEngine:
                     invalidation = min(higher_levels) if higher_levels else (current_price + max(mae_invalidation, atr_val))
                 stop_price = invalidation + buffer
                 stop_type = "SWING_HIGH_RESISTANCE"
-                reason = f"Structural stop above resistance {invalidation:.1f} with {buffer:.1f} ATR buffer"
+                reason = f"Structural stop above resistance {invalidation:.1f} with {buffer:.1f} ATR buffer (lookback={lookback})"
             else:
                 risk_dist = max(mae_invalidation, atr_val * 1.5)
                 invalidation = current_price + risk_dist
@@ -120,6 +139,18 @@ class DynamicStopEngine:
                 reason = f"Empirical MAE invalidation ({risk_dist:.1f}pts) with ATR buffer"
 
             risk_dist = stop_price - current_price
+
+        # Guard 1: Maximum risk guard — cap stop if risk > 3.0 * ATR
+        if risk_dist > atr_val * 3.0:
+            stop_price = (current_price - atr_val * 2.5) if is_buy else (current_price + atr_val * 2.5)
+            risk_dist = abs(current_price - stop_price)
+            reason += f" [CAPPED: risk>{atr_val*3:.1f}]"
+
+        # Guard 2: Minimum risk guard — floor stop if risk < 0.5 * ATR to avoid noise stops
+        if risk_dist < atr_val * 0.5:
+            stop_price = (current_price - atr_val * 0.5) if is_buy else (current_price + atr_val * 0.5)
+            risk_dist = abs(current_price - stop_price)
+            reason += f" [FLOORED: risk<{atr_val*0.5:.1f}]"
 
         risk_bps = (risk_dist / current_price) * 10000.0
 
@@ -132,3 +163,4 @@ class DynamicStopEngine:
             stop_type=stop_type,
             reason=reason,
         )
+

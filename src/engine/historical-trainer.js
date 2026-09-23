@@ -73,13 +73,15 @@ export class HistoricalTrainer {
    */
   static async fastFetchJson(url, timeoutMs = 1200) {
     try {
+      const isLocal = typeof url === 'string' && (url.includes('localhost') || url.includes('127.0.0.1') || url.startsWith('/api'));
+      const headers = isLocal ? { 'Authorization': 'Bearer delta_live_trade_2026_authorized' } : {};
       if (typeof AbortController === 'undefined') {
-        const res = await fetch(url, { cache: 'no-cache' });
+        const res = await fetch(url, { headers, cache: 'no-cache' });
         return res.ok ? await res.json() : null;
       }
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
-      const res = await fetch(url, { signal: controller.signal, cache: 'no-cache' });
+      const res = await fetch(url, { headers, signal: controller.signal, cache: 'no-cache' });
       clearTimeout(timer);
       if (res && res.ok) {
         return await res.json();

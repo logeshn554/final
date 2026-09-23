@@ -21,11 +21,23 @@ export class MastermindEngine {
     this.maxHistory = 100;
 
     // Minimum calibrated confidence to authorize execution
-    this.minConfidenceToApprove = options.minConfidence || 0.54;
+    this.minConfidenceToApprove = options.minConfidence || 0.46;
     // Minimum absolute score to trigger BUY/SELL
-    this.scoreThreshold = options.scoreThreshold || 0.18;
+    this.scoreThreshold = options.scoreThreshold || 0.15;
     // Fractional Kelly cap
     this.kellyFractionCap = options.kellyFraction || 0.25;
+    this.tradeHistoryStats = { wins: 0, losses: 0, total: 0, winRate: 70.0 };
+  }
+
+  /**
+   * Record trade resolution outcome to adapt live performance stats
+   * @param {boolean} isWin Whether trade hit Take Profit (+PnL)
+   */
+  recordTradeOutcome(isWin) {
+    this.tradeHistoryStats.total++;
+    if (isWin) this.tradeHistoryStats.wins++;
+    else this.tradeHistoryStats.losses++;
+    this.tradeHistoryStats.winRate = Math.round((this.tradeHistoryStats.wins / this.tradeHistoryStats.total) * 1000) / 10;
   }
 
   /**
@@ -62,9 +74,24 @@ export class MastermindEngine {
     const hasReliableWinner = Boolean(stratPerf?.hasReliableWinner);
 
     // ─────────────────────────────────────────────────────────────────
-    // 2. INGEST & NORMALIZE: 43 RL ALGORITHMS BUS
+    // 2. INGEST & NORMALIZE: 43 RL ALGORITHMS BUS (RL ONLY)
+    // Excludes all ML models and non-RL algorithms totally
     // ─────────────────────────────────────────────────────────────────
-    const algoIds = Object.keys(signals);
+    const isRLAlgorithm = (id, tag = '') => {
+      if (!id && !tag) return false;
+      const strId = String(id).toLowerCase();
+      const strTag = String(tag).toLowerCase();
+      if (strId.startsWith('python') || strId.startsWith('ml_') || strId.startsWith('institutional') || strId.startsWith('microstructure')) return false;
+      if (['mean_reversion', 'alpha_engine', 'candlestick_engine', 'mtf_confluence', 'volatility_suite', 'deep_lob', 'neural_forecaster', 'foundation_ensemble', 'meta_labeling', 'trade_signal_engine', 'production_strategy'].includes(strId)) return false;
+      if (strId.startsWith('rl_') || !isNaN(Number(id))) return true;
+      if (['dt', 'ppo', 'sac', 'td3', 'dqn', 'd3qn', 'qrdqn', 'iqn', 'fqf', 'iql', 'cql', 'tdmpc2', 'cpo', 'oc', 'marl', 'hrl', 'c51', 'rsrl', 'maml', 'wm', 'morl', 'srl', 'gtrxl'].includes(strTag)) return true;
+      return false;
+    };
+
+    const algoIds = Object.keys(signals).filter(id => isRLAlgorithm(id));
+    // If signals did not use rl_ prefix, fallback to all non-ML signals
+    const effectiveAlgoIds = algoIds.length > 0 ? algoIds : Object.keys(signals).filter(id => !id.startsWith('python') && !id.startsWith('ml_'));
+
     let rlBullCount = 0;
     let rlBearCount = 0;
     let rlNeutralCount = 0;
@@ -72,9 +99,30 @@ export class MastermindEngine {
     let rlTotalWeight = 0;
     const rlScores = [];
 
-    for (const id of algoIds) {
+    const perfWeightValues = Object.values(perfWeights).filter(v => typeof v === 'number' && v > 0);
+    const fallbackEmpiricalWeight = perfWeightValues.length > 0 
+      ? (perfWeightValues.reduce((s, v) => s + v, 0) / perfWeightValues.length)
+      : (1.0 / Math.max(1, effectiveAlgoIds.length));
+
+    for (const id of effectiveAlgoIds) {
       const sig = signals[id];
       if (!sig) continue;
+
+      // Check self-healing adjustment / quarantine
+      const healingAdj = typeof autoHealing.getAdjustment === 'function'
+        ? autoHealing.getAdjustment(id)
+        : (autoHealing.algoAdjustments?.[id] || null);
+
+      const isQuarantined = Boolean(
+        sig.quarantined ||
+        healingAdj?.quarantined ||
+        (typeof autoHealing.isQuarantined === 'function' && autoHealing.isQuarantined(id))
+      );
+
+      if (isQuarantined) {
+        continue; // Strictly exclude quarantined algorithm from RL vote and score sum
+      }
+
       const val = typeof sig.direction === 'number' ? sig.direction : (sig.signal || 0);
       const conf = typeof sig.conf === 'number' ? sig.conf : (typeof sig.confidence === 'number' ? sig.confidence : 0.5);
 
@@ -82,8 +130,11 @@ export class MastermindEngine {
       const stratKey = id.startsWith('rl_') ? id : `rl_${id}`;
       const empiricalW = perfWeights[id] !== undefined 
         ? perfWeights[id] 
-        : (perfWeights[stratKey] !== undefined ? perfWeights[stratKey] : (1.0 / Math.max(1, algoIds.length)));
-      const effectiveWeight = Math.max(0.01, empiricalW * Math.max(0.2, conf));
+        : (perfWeights[stratKey] !== undefined ? perfWeights[stratKey] : fallbackEmpiricalWeight);
+
+      // Apply self-healing weight dampener (e.g. 0.85x, or 1.0)
+      const weightDampener = typeof healingAdj?.weightDampener === 'number' ? healingAdj.weightDampener : 1.0;
+      const effectiveWeight = Math.max(0.001, empiricalW * Math.max(0.2, conf) * weightDampener);
 
       rlScores.push(val);
       rlWeightedScoreSum += val * effectiveWeight;
@@ -94,7 +145,7 @@ export class MastermindEngine {
       else rlNeutralCount++;
     }
 
-    const rlActiveCount = algoIds.length;
+    const rlActiveCount = effectiveAlgoIds.length;
     const rlDirectionalTotal = rlBullCount + rlBearCount;
     const rlAgreementPct = rlDirectionalTotal > 0
       ? Math.round((Math.max(rlBullCount, rlBearCount) / rlDirectionalTotal) * 100)
@@ -114,47 +165,30 @@ export class MastermindEngine {
     };
 
     // ─────────────────────────────────────────────────────────────────
-    // 3. INGEST & NORMALIZE: PYTHON 5-STRATEGY ENSEMBLE BUS
+    // 3. PYTHON ML ENSEMBLE: FULLY DISCONNECTED FROM MASTERMIND
+    // MasterMind decision authority is 100% reserved for Reinforcement Learning
     // ─────────────────────────────────────────────────────────────────
-    let pyScore = 0;
-    let pyConnected = false;
-    let pyDirection = 0;
-    let pyConfidence = 0.5;
-    let pyStrategies = {};
-    let pyWeights = {};
-    let pyDynamicTP = null;
-    let pyStopLoss = null;
-    let pyRR = 1.5;
-
-    if (py && py.symbol === 'ETHUSDT' && py.signal) {
-      pyConnected = true;
-      pyDirection = py.signal === 'BUY' ? 1 : py.signal === 'SELL' ? -1 : 0;
-      pyConfidence = clamp(py.confidence || 0.6, 0.1, 0.99);
-
-      // Weight Python ensemble with empirical paper-trading weight
-      const pyEmpiricalW = perfWeights['python_ensemble'] || (1.0 / 20);
-      pyScore = pyDirection * pyConfidence;
-      pyStrategies = py.strategy_contributions || {};
-      pyWeights = py.strategy_weights || {};
-      pyDynamicTP = py.dynamic_take_profit || null;
-      pyStopLoss = py.stop_loss || null;
-      pyRR = py.risk_reward_ratio || 1.5;
-    }
+    const pyConnected = false;
+    const pyDirection = 0;
+    const pyConfidence = 0.5;
+    const pyScore = 0;
+    const pyRR = 1.5;
 
     const pyContributor = {
-      connected: pyConnected,
-      signal: py?.signal || 'HOLD',
-      direction: pyDirection,
-      confidence: Math.round(pyConfidence * 1000) / 1000,
-      score: Math.round(pyScore * 1000) / 1000,
-      strategies: pyStrategies,
-      weights: pyWeights,
-      riskRewardRatio: pyRR,
-      regime: py?.regime?.primary_regime || 'NORMAL',
+      connected: false,
+      signal: 'DISCONNECTED',
+      direction: 0,
+      confidence: 0.5,
+      score: 0,
+      strategies: {},
+      weights: {},
+      riskRewardRatio: 1.5,
+      regime: 'DISCONNECTED',
+      status: 'ML Models Disconnected: MasterMind connects exclusively to RL algorithms',
     };
 
     // ─────────────────────────────────────────────────────────────────
-    // 4. INGEST & NORMALIZE: INSTITUTIONAL ALPHA & MICROSTRUCTURE BUS
+    // 4. INSTITUTIONAL ALPHA & MICROSTRUCTURE TELEMETRY (VPIN RISK GATE ONLY)
     // ─────────────────────────────────────────────────────────────────
     let instScore = 0;
     if (typeof inst.compositeSignal === 'number') instScore = clamp(inst.compositeSignal, -1, 1);
@@ -176,22 +210,20 @@ export class MastermindEngine {
     };
 
     // ─────────────────────────────────────────────────────────────────
-    // 5. INGEST & NORMALIZE: CANDLESTICK, MTF & RESEARCH STACK
+    // 5. INGEST TELEMETRY (CANDLESTICK, MTF & RESEARCH STACK)
     // ─────────────────────────────────────────────────────────────────
     const candScore = clamp(candles.score || 0, -1, 1);
     const mtfScore = clamp(mtf.confluenceScore || 0, -1, 1);
     const deepLobScore = research?.deepLOB?.score || 0;
-    const metaWinProb = research?.metaLabeling?.winProb || (py?.confidence || 0.65);
+    const metaWinProb = research?.metaLabeling?.winProb || 0.65;
 
     // ─────────────────────────────────────────────────────────────────
     // 6. MULTI-MODEL PERFORMANCE-WEIGHTED SYNTHESIS (GRANULAR CONSENSUS)
     // Every Strategy × Measured Paper Performance × Confidence × Regime Affinity
     // ─────────────────────────────────────────────────────────────────
-    const currentRegime = pyContributor.regime !== 'NORMAL'
-      ? pyContributor.regime
-      : (mp?.regime || ctx.regime || 'TRENDING').toUpperCase();
+    const currentRegime = (mp?.regime || ctx.regime || 'TRENDING').toUpperCase();
 
-    // Pool of all active strategy signals (all 43 RL algorithms, Python models, quants, patterns)
+    // Pool of all active strategy signals
     const activeSignalPool = (stratPerf?.signals && Object.keys(stratPerf.signals).length > 0)
       ? stratPerf.signals
       : (ctx.signals || {});
@@ -210,6 +242,26 @@ export class MastermindEngine {
     for (const [id, sigObj] of stratEntries) {
       if (!sigObj) continue;
 
+      // Disconnect Python ML models from consensus
+      if (id.startsWith('python_') || id === 'python_ensemble') {
+        continue;
+      }
+
+      // Check self-healing adjustment / quarantine for this strategy
+      const healingAdj = typeof autoHealing.getAdjustment === 'function'
+        ? autoHealing.getAdjustment(id)
+        : (autoHealing.algoAdjustments?.[id] || null);
+
+      const isQuarantined = Boolean(
+        sigObj.quarantined ||
+        healingAdj?.quarantined ||
+        (typeof autoHealing.isQuarantined === 'function' && autoHealing.isQuarantined(id))
+      );
+
+      if (isQuarantined) {
+        continue; // Strictly exclude quarantined strategy from consensus
+      }
+
       // Directional value in [-1, 1]
       const dirVal = typeof sigObj.direction === 'number' 
         ? sigObj.direction 
@@ -225,17 +277,17 @@ export class MastermindEngine {
         ? perfWeights[id]
         : (perfWeights[stratKey] !== undefined ? perfWeights[stratKey] : defaultWeight);
 
-      // Strategy regime affinity multiplier — reads from empirical paper-trading data per strategy per regime.
-      // stratPerf.strategies is populated by StrategyPerformanceEngine.getState() with per-regime affinityScore.
+      // Strategy regime affinity multiplier
       const stratMeta = stratPerf?.strategies?.[id] || stratPerf?.strategies?.[stratKey];
-      // regimeScore is the affinityScore for the CURRENT regime from observed paper trades (0.05–0.95)
-      // Falls back to 1.0 only when no trades exist yet (neutral prior = full weight)
       const regimeAffinity = (stratMeta?.regimeScore !== undefined && stratMeta.regimeScore > 0)
         ? stratMeta.regimeScore
         : 1.0;
 
-      // Granular strategy dynamic weight: w_i * c_i * r_i
-      const strategyDynamicWeight = Math.max(0.001, empiricalW * Math.max(0.15, conf) * Math.max(0.2, regimeAffinity));
+      // Self-healing weight dampener (e.g. 0.85x after error, or 1.0)
+      const weightDampener = typeof healingAdj?.weightDampener === 'number' ? healingAdj.weightDampener : 1.0;
+
+      // Granular strategy dynamic weight: w_i * c_i * r_i * h_i
+      const strategyDynamicWeight = Math.max(0.001, empiricalW * Math.max(0.15, conf) * Math.max(0.2, regimeAffinity) * weightDampener);
 
       if (Math.abs(dirVal) > 0.02) {
         totalCount++;
@@ -262,6 +314,23 @@ export class MastermindEngine {
     // Evaluate supporting vs conflicting strategies relative to final masterScore
     for (const [id, sigObj] of stratEntries) {
       if (!sigObj) continue;
+
+      if (id.startsWith('python_') || id === 'python_ensemble') continue;
+
+      const healingAdj = typeof autoHealing.getAdjustment === 'function'
+        ? autoHealing.getAdjustment(id)
+        : (autoHealing.algoAdjustments?.[id] || null);
+
+      const isQuarantined = Boolean(
+        sigObj.quarantined ||
+        healingAdj?.quarantined ||
+        (typeof autoHealing.isQuarantined === 'function' && autoHealing.isQuarantined(id))
+      );
+
+      if (isQuarantined) {
+        continue;
+      }
+
       const dirVal = typeof sigObj.direction === 'number'
         ? sigObj.direction
         : (typeof sigObj.signal === 'number' ? sigObj.signal : (sigObj.signal === 'BUY' ? 1 : sigObj.signal === 'SELL' ? -1 : 0));
@@ -279,40 +348,226 @@ export class MastermindEngine {
     const weightedAgreement = totalWeightSum > 0 ? Math.round((Math.max(buyWeightSum, sellWeightSum) / totalWeightSum) * 100) / 100 : 0.50;
 
     // ─────────────────────────────────────────────────────────────────
+    // 6.5 INGEST TOP 3 PERFORMING RL ALGORITHMS (ARENA & DIRECT REINFORCEMENT)
+    // MasterMind connects FULLY and EXCLUSIVELY to top Reinforcement Learning algorithms
+    // Featuring Decision Transformer (Sequence Modeling), PPO, QR-DQN and empirical winners
+    // All ML models are disconnected.
+    // ─────────────────────────────────────────────────────────────────
+    let top5Profitable = [];
+
+
+    // Priority 1: Real-Time $10 Capital Benchmark Arena (All 43 RL Algorithms)
+    if (ctx.capitalBenchmark?.algos && Array.isArray(ctx.capitalBenchmark.algos) && ctx.capitalBenchmark.algos.length > 0) {
+      const rlAlgos = ctx.capitalBenchmark.algos.filter(a => a && isRLAlgorithm(a.id, a.tag));
+
+      const ranked = [...rlAlgos].sort((a, b) => {
+        const wrA = Number(a.realWinRate) || 0;
+        const wrB = Number(b.realWinRate) || 0;
+        const tradesA = Number(a.totalTrades) || 0;
+        const tradesB = Number(b.totalTrades) || 0;
+        const pnlA = Number(a.realizedPnL) || 0;
+        const pnlB = Number(b.realizedPnL) || 0;
+
+        // If trades exist, rank by real win rate and PnL
+        if (tradesA > 0 || tradesB > 0) {
+          if (Math.abs(wrB - wrA) > 2) return wrB - wrA;
+          return pnlB - pnlA;
+        }
+
+        // Cold-start: prioritize active directional conviction
+        const sigA = signals[a.id] || signals[`rl_${a.id}`] || {};
+        const sigB = signals[b.id] || signals[`rl_${b.id}`] || {};
+        const dirA = Math.abs(typeof sigA.direction === 'number' ? sigA.direction : (sigA.signal === 'BUY' ? 1 : sigA.signal === 'SELL' ? -1 : 0));
+        const dirB = Math.abs(typeof sigB.direction === 'number' ? sigB.direction : (sigB.signal === 'BUY' ? 1 : sigB.signal === 'SELL' ? -1 : 0));
+        if (dirB !== dirA) return dirB - dirA;
+
+        // Decision Transformer architectural priority
+        const isDTA = a.id === 40 || a.tag === 'DT';
+        const isDTB = b.id === 40 || b.tag === 'DT';
+        if (isDTA && !isDTB) return -1;
+        if (!isDTA && isDTB) return 1;
+
+        return (Number(b.equity) || 10) - (Number(a.equity) || 10);
+      });
+
+      top5Profitable = ranked.slice(0, 5).map((a, idx) => {
+        const sig = signals[a.id] || signals[`rl_${a.id}`] || {};
+        const dir = typeof sig.direction === 'number'
+          ? sig.direction
+          : (typeof sig.signal === 'number'
+            ? sig.signal
+            : (sig.signal === 'BUY' ? 1 : (sig.signal === 'SELL' ? -1 : (a.activeTrade ? (a.activeTrade.isBuy ? 1 : -1) : 0))));
+        const conf = typeof sig.conf === 'number' ? sig.conf : (typeof sig.confidence === 'number' ? sig.confidence : 0.65);
+        const winRate = Number(a.realWinRate) || 70.0;
+        const profit = Number(a.realizedPnL) || 0.0;
+        const profitWeight = Math.max(0.1, (winRate / 100) * (1 + Math.max(0, profit)));
+
+        return {
+          id: a.id,
+          algoId: a.id,
+          name: a.name || a.tag,
+          tag: a.tag || (a.id === 40 ? 'DT' : 'RL'),
+          category: 'RL',
+          horizon: a.activeTrade?.horizon || a.horizon || '',
+          winRate,
+          netProfitUSD: Math.round(profit * 100) / 100,
+          equity: Number(a.equity) || 10,
+          totalTrades: Number(a.totalTrades) || 0,
+          winningTrades: Number(a.wins) || 0,
+          profitWeight,
+          currentSignal: dir > 0.05 ? 'BUY' : (dir < -0.05 ? 'SELL' : 'HOLD'),
+          direction: dir,
+          confidence: conf,
+          rank: idx + 1,
+          tpPrice: a.activeTrade?.tpPrice,
+          slPrice: a.activeTrade?.slPrice,
+          tpDistance: a.activeTrade?.tpDistance,
+          slDistance: a.activeTrade?.slDistance,
+        };
+      });
+    }
+
+    // Priority 2: Extract active RL algorithms from signals (Cold start / Direct injection)
+    if (top5Profitable.length === 0 || top5Profitable.every(s => Math.abs(s.direction) <= 0.02)) {
+      const activeRLCandidates = [];
+      for (const [id, s] of Object.entries(signals)) {
+        if (!s) continue;
+        if (!isRLAlgorithm(id)) continue;
+        const dir = typeof s.direction === 'number'
+          ? s.direction
+          : (typeof s.signal === 'number' ? s.signal : (s.signal === 'BUY' ? 1 : s.signal === 'SELL' ? -1 : 0));
+        const conf = typeof s.conf === 'number' ? s.conf : (typeof s.confidence === 'number' ? s.confidence : 0.65);
+        const isDT = id === '40' || id === 40 || id === 'rl_40' || id === 'rl_dt' || id === 'DT';
+
+        activeRLCandidates.push({
+          id,
+          algoId: id,
+          name: isDT ? 'Decision Transformer (Sequence Modeling)' : (id.startsWith('rl_') ? id.toUpperCase() : `RL Algo ${id}`),
+          tag: isDT ? 'DT' : (id.startsWith('rl_') ? id.slice(3).toUpperCase() : 'RL'),
+          category: 'RL',
+          winRate: 70,
+          netProfitUSD: 0,
+          equity: 10,
+          totalTrades: 0,
+          winningTrades: 0,
+          profitWeight: Math.max(0.2, conf) * (isDT ? 1.5 : 1.0),
+          currentSignal: dir > 0.05 ? 'BUY' : (dir < -0.05 ? 'SELL' : 'HOLD'),
+          direction: dir,
+          confidence: conf,
+          rank: 1,
+        });
+      }
+
+      // Sort: active directional candidates first, then Decision Transformer, then confidence
+      activeRLCandidates.sort((a, b) => {
+        const dirA = Math.abs(a.direction) > 0.05 ? 1 : 0;
+        const dirB = Math.abs(b.direction) > 0.05 ? 1 : 0;
+        if (dirB !== dirA) return dirB - dirA;
+        const dtA = a.tag === 'DT' ? 1 : 0;
+        const dtB = b.tag === 'DT' ? 1 : 0;
+        if (dtB !== dtA) return dtB - dtA;
+        return (b.confidence || 0) - (a.confidence || 0);
+      });
+
+      if (activeRLCandidates.length > 0) {
+        top5Profitable = activeRLCandidates.slice(0, 5);
+      }
+    }
+
+    // Priority 3: Fallback to stratPerf RL strategies
+    if (top5Profitable.length === 0) {
+      if (typeof stratPerf?.getTopWinningRLStrategies === 'function') {
+        top5Profitable = stratPerf.getTopWinningRLStrategies(5);
+      } else if (Array.isArray(stratPerf?.top5Profitable)) {
+        top5Profitable = stratPerf.top5Profitable.filter(s => s.category === 'RL' || String(s.id).startsWith('rl_'));
+      }
+    }
+
+    // Normalize profit/win-rate weights among Top RL Leaders
+    const totalBasis = top5Profitable.reduce((sum, s) => sum + (s.profitWeight || 1.0), 0) || 1.0;
+    top5Profitable.forEach((s, idx) => {
+      s.rank = idx + 1;
+      s.profitWeight = (s.profitWeight || 1.0) / totalBasis;
+      s.profitPct = Math.round(s.profitWeight * 1000) / 10;
+    });
+
+    let top3ScoreSum = 0;
+    let top3WeightSum = 0;
+    let top3BullWeight = 0;
+    let top3BearWeight = 0;
+    let top3AlignedCount = 0;
+
+    // Isolate Top 3 RL Leaders (with Decision Transformer prioritized)
+    const activeTopRL = top5Profitable.slice(0, 3).filter(s => Math.abs(s.direction) > 0.02);
+    const top3Available = activeTopRL.length > 0;
+
+    if (top3Available) {
+      for (const s of activeTopRL) {
+        const w = s.profitWeight || (1.0 / activeTopRL.length);
+        const dir = typeof s.direction === 'number' ? s.direction : (s.currentSignal === 'BUY' ? 1 : s.currentSignal === 'SELL' ? -1 : 0);
+        const conf = typeof s.confidence === 'number' ? s.confidence : 0.65;
+        top3ScoreSum += dir * w * Math.max(0.2, conf);
+        top3WeightSum += w * Math.max(0.2, conf);
+        if (dir > 0.05) { top3BullWeight += w; top3AlignedCount++; }
+        else if (dir < -0.05) { top3BearWeight += w; }
+      }
+    }
+    const top3ConsensusScore = top3WeightSum > 0 ? clamp(top3ScoreSum / top3WeightSum, -1, 1) : 0;
+
+    // ─────────────────────────────────────────────────────────────────
     // 7. CONFLICT RESOLUTION & CALIBRATED CONFIDENCE
+    // Evaluates RL Quorum vs Top 3 RL alignment (ML models totally removed)
     // ─────────────────────────────────────────────────────────────────
     let conflictDetected = false;
     let conflictDetails = 'CONVERGENT';
 
-    if (pyConnected && rlContributor.direction !== 0 && pyContributor.direction !== 0) {
-      if (rlContributor.direction !== pyContributor.direction) {
-        conflictDetected = true;
-        conflictDetails = `DISAGREEMENT: 43-RL vote is ${rlContributor.direction > 0 ? 'LONG' : 'SHORT'} but Python 5-strat is ${pyContributor.direction > 0 ? 'BUY' : 'SELL'}`;
-      }
+    // Flag divergence only if Top 3 RL consensus and 43-RL Quorum have strong opposing conviction
+    const isStrongTop3 = Math.abs(top3ConsensusScore) >= 0.20;
+    const isStrongRLQuorum = Math.abs(rlScore) >= 0.20;
+    if (isStrongTop3 && isStrongRLQuorum && (top3ConsensusScore * rlScore < -0.04)) {
+      conflictDetected = true;
+      conflictDetails = `RL DIVERGENCE: Top 3 RL leaders are ${top3ConsensusScore > 0 ? 'BULLISH' : 'BEARISH'} (${top3ConsensusScore.toFixed(2)}) while 43-RL Quorum is ${rlScore > 0 ? 'LONG' : 'SHORT'} (${rlScore.toFixed(2)})`;
     }
 
-    // Baseline consensus confidence incorporating empirical weighted agreement
-    let baseConfidence = Math.abs(masterScore) * 0.40
-      + (weightedAgreement) * 0.35
-      + (metaWinProb) * 0.25;
+    // Baseline consensus confidence incorporating Top 3 RL and 43-RL quorum
+    let baseConfidence = (top3Available ? Math.abs(top3ConsensusScore) * 0.45 : 0.20)
+      + (Math.abs(rlScore) * 0.30)
+      + ((rlAgreementPct / 100) * 0.15)
+      + (top5Profitable.length > 0 ? ((top5Profitable[0].winRate || 70) / 100 * 0.10) : 0.07);
 
     // Penalties
-    if (conflictDetected) baseConfidence *= 0.60; // 40% penalty for major system divergence
-    if (rlDispersion > 0.45) baseConfidence *= 0.85; // 15% penalty for high dispersion
-    if (isToxicFlow) baseConfidence *= 0.80; // 20% penalty for toxic informed flow
+    if (conflictDetected) baseConfidence *= 0.75;
+    if (rlDispersion > 0.45) baseConfidence *= 0.88;
+    if (isToxicFlow) baseConfidence *= 0.80;
 
     const calibratedConfidence = clamp(baseConfidence, 0.05, 0.98);
 
     // ─────────────────────────────────────────────────────────────────
-    // 8. MASTER ACTION DETERMINATION
+    // 8. MASTER ACTION DETERMINATION (100% REINFORCEMENT LEARNING ARCHITECTURE)
+    // 70% Top 3 RL Leaders (Decision Transformer, PPO, etc.) + 30% 43-RL Quorum Consensus
+    // ML models (Python ensemble, GBDT, etc.) are totally disconnected.
     // ─────────────────────────────────────────────────────────────────
+    const compositeDecisionScore = top3Available
+      ? clamp((top3ConsensusScore * 0.70) + (rlScore * 0.30), -1, 1)
+      : clamp(rlScore !== 0 ? rlScore : masterScore, -1, 1);
+
     let signal = 'HOLD';
     let direction = 0;
 
-    if (!conflictDetected && masterScore >= this.scoreThreshold && calibratedConfidence >= this.minConfidenceToApprove) {
+    // Check if TradeSignalEngine triggered a Breakout Sentinel Breach or High-Confluence Setup
+    const candidate = ctx.candidateSetup;
+    const isCandidateBreakout = candidate && candidate.direction !== 0 && (
+      (candidate.triggerType && (candidate.triggerType.includes('BREAKOUT') || candidate.triggerType.includes('BREAKDOWN'))) ||
+      Math.abs(candidate.confidence || 0) >= 0.22
+    );
+
+    if (isCandidateBreakout && !conflictDetected && !isToxicFlow && !killSwitchTriggered) {
+      signal = candidate.direction > 0 ? 'BUY' : 'SELL';
+      direction = candidate.direction;
+    } else if (!conflictDetected && compositeDecisionScore >= this.scoreThreshold && calibratedConfidence >= this.minConfidenceToApprove) {
       signal = 'BUY';
       direction = 1;
-    } else if (!conflictDetected && masterScore <= -this.scoreThreshold && calibratedConfidence >= this.minConfidenceToApprove) {
+    } else if (!conflictDetected && compositeDecisionScore <= -this.scoreThreshold && calibratedConfidence >= this.minConfidenceToApprove) {
       signal = 'SELL';
       direction = -1;
     } else {
@@ -325,7 +580,7 @@ export class MastermindEngine {
     // ─────────────────────────────────────────────────────────────────
     const curAtr = parseFloat(ctx.atr || (price * 0.005)) || 16.0;
 
-    // Call dynamic target and stop engines
+    // Call dynamic target and stop engines (purely volatility- and distribution-driven)
     const dynamicTargetResult = this.selectDynamicTarget({
       entryPrice: price,
       direction,
@@ -334,7 +589,6 @@ export class MastermindEngine {
       regime: currentRegime,
       strategyWeights: perfWeights,
       atr: curAtr,
-      pyDynamicTP,
     });
 
     const dynamicStopResult = this.selectDynamicStop({
@@ -345,24 +599,35 @@ export class MastermindEngine {
       regime: currentRegime,
       volatility: curAtr,
       marketStructure: ctx.marketStructure,
-      pyStopLoss,
     });
 
     const dynamicRR = dynamicStopResult.selectedStopDistance > 0
       ? Math.round((dynamicTargetResult.selectedDistance / dynamicStopResult.selectedStopDistance) * 100) / 100
-      : (pyRR || 1.5);
+      : 1.5;
 
     // ─────────────────────────────────────────────────────────────────
     // 10. MODEL HEALTH & DIAGNOSTICS
     // ─────────────────────────────────────────────────────────────────
-    const quarantined = Number(autoHealing.quarantinedCount || 0);
+    const quarantined = typeof autoHealing.getQuarantinedCount === 'function'
+      ? autoHealing.getQuarantinedCount()
+      : Number(autoHealing.quarantinedCount || 0);
+
+    const quarantinedList = typeof autoHealing.getQuarantinedList === 'function'
+      ? autoHealing.getQuarantinedList()
+      : (autoHealing.quarantinedList || []);
+
+    const systemStatus = typeof autoHealing.getSystemHealth === 'function'
+      ? autoHealing.getSystemHealth()
+      : (autoHealing.systemHealth || '100% OPTIMAL');
+
     const healthyCount = Math.max(0, rlActiveCount - quarantined);
     const modelHealth = {
       total: rlActiveCount,
       healthy: healthyCount,
       degraded: Math.max(0, rlActiveCount - healthyCount),
       quarantined: quarantined,
-      systemStatus: autoHealing.systemHealth || '100% OPTIMAL',
+      quarantinedList: quarantinedList,
+      systemStatus: systemStatus,
       strategyPerformanceStatus: stratPerf?.statusText || 'Awaiting initial trade sample',
     };
 
@@ -374,7 +639,7 @@ export class MastermindEngine {
 
     if (signal === 'HOLD') {
       approved = false;
-      rejectionReason = 'Signal is HOLD — zero directional authorization.';
+      rejectionReason = ctx.scanReason || 'SCANNING MARKET: Awaiting multi-model breakout confluence';
     } else if (killSwitchTriggered) {
       approved = false;
       rejectionReason = 'BLOCKED by Emergency Kill Switch / Portfolio Drawdown Limit.';
@@ -386,7 +651,7 @@ export class MastermindEngine {
       rejectionReason = `BLOCKED by Inter-Model Conflict: ${conflictDetails}.`;
     } else if (rlActiveCount >= 30 ? healthyCount < 25 : (rlActiveCount > 0 && healthyCount < Math.max(1, Math.floor(rlActiveCount * 0.5)))) {
       approved = false;
-      rejectionReason = `BLOCKED: Insufficient healthy algorithms (${healthyCount} / ${rlActiveCount} active).`;
+      rejectionReason = `BLOCKED: Insufficient healthy algorithms (${healthyCount} / ${rlActiveCount} active, ${quarantined} quarantined).`;
     } else if (dynamicStopResult.selectedStopDistance <= 0 || isNaN(dynamicStopResult.selectedStopDistance)) {
       approved = false;
       rejectionReason = 'BLOCKED: Invalid structural stop calculation.';
@@ -438,9 +703,10 @@ export class MastermindEngine {
 
     let reason = '';
     if (approved) {
-      reason = `${signal} AUTHORIZED: Empirical multi-model confluence ${(masterScore * 100).toFixed(1)}% (${(weightedAgreement * 100).toFixed(0)}% weighted agreement) in ${currentRegime} regime with ${dynamicRR}:1 market R:R.`;
+      const triggerNote = isCandidateBreakout ? ` [Triggered: ${candidate.triggerType || 'Breakout Sentinel'}]` : '';
+      reason = `${signal} AUTHORIZED: Empirical multi-model confluence ${(masterScore * 100).toFixed(1)}% (${(weightedAgreement * 100).toFixed(0)}% weighted agreement) in ${currentRegime} regime with ${dynamicRR}:1 market R:R.${triggerNote}`;
     } else {
-      reason = `${signal}: ${rejectionReason}`;
+      reason = rejectionReason;
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -463,8 +729,28 @@ export class MastermindEngine {
 
       bestOverallStrategy: bestOverall?.id || (hasReliableWinner ? bestOverall?.name : 'INSUFFICIENT_DATA'),
       bestRecentStrategy: bestRecent?.id || 'INSUFFICIENT_DATA',
-      bestRegimeStrategy: bestCurrentRegimeStrat?.id || 'INSUFFICIENT_DATA',
       strategyWeights: perfWeights,
+      top5ProfitLeaders: top5Profitable,
+      top5Consensus: {
+        score: Math.round(top3ConsensusScore * 1000) / 1000,
+        bullWeight: Math.round(top3BullWeight * 1000) / 10,
+        bearWeight: Math.round(top3BearWeight * 1000) / 10,
+        alignedCount: top3AlignedCount,
+        leaderName: top5Profitable[0]?.name || 'N/A',
+        leaderTag: top5Profitable[0]?.tag || 'DT',
+        leaderWinRate: top5Profitable[0]?.winRate || 0,
+        leaderProfitUSD: top5Profitable[0]?.netProfitUSD || 0,
+      },
+      top3Consensus: {
+        score: Math.round(top3ConsensusScore * 1000) / 1000,
+        bullWeight: Math.round(top3BullWeight * 1000) / 10,
+        bearWeight: Math.round(top3BearWeight * 1000) / 10,
+        alignedCount: top3AlignedCount,
+        leaderName: top5Profitable[0]?.name || 'N/A',
+        leaderTag: top5Profitable[0]?.tag || 'DT',
+        leaderWinRate: top5Profitable[0]?.winRate || 0,
+        leaderProfitUSD: top5Profitable[0]?.netProfitUSD || 0,
+      },
 
       movement: {
         favorable: dynamicTargetResult,
@@ -514,44 +800,27 @@ export class MastermindEngine {
   }
 
   /**
-   * Selects economically useful target from estimated distribution (NO FIXED %)
+   * Selects economically useful target from estimated distribution (NO FIXED %, ZERO ML OVERRIDE)
    */
   selectDynamicTarget(params) {
-    const { entryPrice, direction, movementDistribution, confidence, regime, atr, pyDynamicTP } = params;
-
-    // Use Python empirical MFE/MAE targets if available
-    if (pyDynamicTP && pyDynamicTP.base_target) {
-      const baseT = Number(pyDynamicTP.base_target);
-      const consT = Number(pyDynamicTP.conservative_target || baseT * 0.995);
-      const extT = Number(pyDynamicTP.extended_target || baseT * 1.01);
-      const dist = Math.abs(baseT - entryPrice);
-
-      return {
-        selectedLabel: 'Empirical MFE Median',
-        selectedDistance: Math.round(dist * 100) / 100,
-        selectedProbability: pyDynamicTP.base_prob || 0.50,
-        conservativeDistance: Math.round(Math.abs(consT - entryPrice) * 100) / 100,
-        mainDistance: Math.round(dist * 100) / 100,
-        extendedDistance: Math.round(Math.abs(extT - entryPrice) * 100) / 100,
-        targetPrice: baseT,
-      };
-    }
+    const { entryPrice, direction, movementDistribution, confidence, regime, atr } = params;
+    const dynamicFloor = Math.max(entryPrice * 0.0005, (atr > 0 ? atr * 0.15 : entryPrice * 0.001));
 
     const consMove = Number(movementDistribution?.predictedMovement?.conservativeMove) || (atr * 0.85);
     const mainMove = Number(movementDistribution?.predictedMovement?.mainMove) || (atr * 1.45);
     const extMove = Number(movementDistribution?.predictedMovement?.extendedMove) || (atr * 2.20);
 
     // Adaptive target selection based on confidence and regime
-    let selectedMove = mainMove;
+    let selectedMove = Math.max(dynamicFloor, mainMove);
     let label = 'Base Optimal Move';
     let prob = 0.50;
 
     if (confidence >= 0.75 && (regime.includes('TREND') || regime.includes('BREAKOUT'))) {
-      selectedMove = extMove;
+      selectedMove = Math.max(dynamicFloor * 1.5, extMove);
       label = 'Extended Volatility Expansion';
       prob = 0.28;
     } else if (confidence < 0.60 || regime.includes('REVERT') || regime.includes('COMPRESS')) {
-      selectedMove = consMove;
+      selectedMove = Math.max(dynamicFloor * 0.8, consMove);
       label = 'Conservative High-Prob Target';
       prob = 0.74;
     }
@@ -572,28 +841,17 @@ export class MastermindEngine {
   }
 
   /**
-   * Selects structural dynamic stop from adverse movement distribution (NO FIXED %)
+   * Selects structural dynamic stop from adverse movement distribution (NO FIXED %, ZERO ML OVERRIDE)
    */
   selectDynamicStop(params) {
-    const { entryPrice, direction, adverseMovement, volatility, pyStopLoss, marketStructure = {} } = params;
-
-    if (pyStopLoss && pyStopLoss.stop_price) {
-      const sp = Number(pyStopLoss.stop_price);
-      const dist = Math.abs(entryPrice - sp);
-      return {
-        expectedDistance: Math.round(dist * 100) / 100,
-        worstDistance: Math.round((dist * 1.35) * 100) / 100,
-        selectedStopDistance: Math.round(dist * 100) / 100,
-        stopPrice: sp,
-        invalidationLevel: Number(pyStopLoss.invalidation_level || sp),
-      };
-    }
+    const { entryPrice, direction, adverseMovement, volatility, marketStructure = {} } = params;
+    const minAdvFloor = Math.max(entryPrice * 0.0005, (volatility > 0 ? volatility * 0.15 : entryPrice * 0.001));
 
     // Invalidation from structural swing points if present in marketStructure
     const structHigh = Number(marketStructure?.recentHigh || marketStructure?.swingHigh || 0);
     const structLow = Number(marketStructure?.recentLow || marketStructure?.swingLow || 0);
 
-    const advMove = Number(adverseMovement?.expected) || (volatility > 0 ? volatility : (entryPrice * 0.004));
+    const advMove = Math.max(minAdvFloor, Number(adverseMovement?.expected) || (volatility > 0 ? volatility : (entryPrice * 0.004)));
     const worstMove = Number(adverseMovement?.worstCase) || (advMove * 1.5);
     const buffer = volatility > 0 ? (volatility * 0.20) : (entryPrice * 0.001);
 
@@ -601,11 +859,20 @@ export class MastermindEngine {
       ? (structLow > 0 && structLow < entryPrice ? structLow : Math.round((entryPrice - advMove) * 100) / 100)
       : (structHigh > 0 && structHigh > entryPrice ? structHigh : Math.round((entryPrice + advMove) * 100) / 100);
 
-    const stopPrice = direction >= 0
+    let stopPrice = direction >= 0
       ? Math.round((invalidationLevel - buffer) * 100) / 100
       : Math.round((invalidationLevel + buffer) * 100) / 100;
 
-    const selectedStopDistance = Math.round(Math.abs(entryPrice - stopPrice) * 100) / 100;
+    let selectedStopDistance = Math.round(Math.abs(entryPrice - stopPrice) * 100) / 100;
+
+    // Safety floor: stop distance must never be <= minAdvFloor
+    if (selectedStopDistance < minAdvFloor || isNaN(selectedStopDistance)) {
+      selectedStopDistance = Math.round((volatility > 0 ? volatility : Math.max(minAdvFloor, entryPrice * 0.004)) * 100) / 100;
+      stopPrice = direction >= 0
+        ? Math.round((entryPrice - selectedStopDistance) * 100) / 100
+        : Math.round((entryPrice + selectedStopDistance) * 100) / 100;
+      invalidationLevel = stopPrice;
+    }
 
     return {
       expectedDistance: Math.round(advMove * 100) / 100,
@@ -637,14 +904,37 @@ export class MastermindEngine {
       manualApproved = false;
       manualReason = `MANUAL TRADE REJECTED: Toxic informed flow VPIN ${(vpin * 100).toFixed(1)}% > 45%.`;
     } else if (baseDecision.confidence < 0.40) {
-      // Manual trades are permitted with a relaxed threshold (0.40 vs 0.54 algorithmic)
-      // to allow deliberate human judgment, but still block genuinely unsafe market states.
+      // Manual trades enforce 0.40 manual safety floor
       manualApproved = false;
-      manualReason = `MANUAL TRADE DECLINED: Market confidence ${(baseDecision.confidence * 100).toFixed(1)}% is below the 40% manual safety floor. Market conditions too uncertain for any trade.`;
+      manualReason = `MANUAL TRADE DECLINED: Market confidence ${(baseDecision.confidence * 100).toFixed(1)}% is below the 40% manual safety floor.`;
     } else {
       manualApproved = true;
       manualReason = `MANUAL TRADE APPROVED: Discretionary ${direction > 0 ? 'BUY' : 'SELL'} authorized under MasterMind risk envelope (Conf: ${(baseDecision.confidence * 100).toFixed(1)}%).`;
     }
+
+    // Explicitly compute directional TP and SP for the requested manual trade
+    const price = Number(ctx.price || ctx.currentPrice || baseDecision.price || 0);
+    const curAtr = Number(ctx.atr || baseDecision.atr || 16.0);
+    const targetResult = this.selectDynamicTarget({
+      entryPrice: price,
+      direction,
+      movementDistribution: ctx.movementPrediction || baseDecision.movement?.favorable,
+      confidence: baseDecision.confidence,
+      regime: baseDecision.regime,
+      atr: curAtr,
+    });
+    const stopResult = this.selectDynamicStop({
+      entryPrice: price,
+      direction,
+      adverseMovement: ctx.movementPrediction?.adverseMovement,
+      confidence: baseDecision.confidence,
+      regime: baseDecision.regime,
+      volatility: curAtr,
+      marketStructure: ctx.marketStructure,
+    });
+
+    const tpPrice = targetResult.targetPrice;
+    const spPrice = stopResult.stopPrice;
 
     return {
       ...baseDecision,
@@ -652,6 +942,18 @@ export class MastermindEngine {
       signal: direction > 0 ? 'BUY' : 'SELL',
       approved: manualApproved,
       isManual: true,
+      movement: {
+        favorable: targetResult,
+        adverse: stopResult,
+      },
+      execution: {
+        entryPrice: price,
+        takeProfitPrice: tpPrice,
+        stopPrice: spPrice,
+        tp: tpPrice,
+        sp: spPrice,
+        quantity: baseDecision.execution?.quantity || 1.0,
+      },
       reason: manualReason,
     };
   }

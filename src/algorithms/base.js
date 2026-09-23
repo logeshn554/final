@@ -19,6 +19,28 @@ export class BaseAlgorithm {
     this.lastAction = 1;   // HOLD
     this.lastFeatures = null;
     this.lastReward = 0;
+    this.healingAdjustments = {
+      confidenceHurdle: 0.40,
+      stopMultiplier: 1.0,
+      targetMultiplier: 1.0,
+      weightDampener: 1.0,
+      quarantined: false,
+    };
+  }
+
+  /**
+   * Inject active self-healing adjustments (from AutonomousHealingEngine)
+   * @param {Object} adjustments { confidenceHurdle, stopMultiplier, targetMultiplier, weightDampener, quarantined }
+   */
+  setHealingAdjustments(adjustments = {}) {
+    if (!adjustments) return;
+    this.healingAdjustments = {
+      confidenceHurdle: typeof adjustments.confidenceHurdle === 'number' ? adjustments.confidenceHurdle : 0.40,
+      stopMultiplier: typeof adjustments.stopMultiplier === 'number' ? adjustments.stopMultiplier : 1.0,
+      targetMultiplier: typeof adjustments.targetMultiplier === 'number' ? adjustments.targetMultiplier : 1.0,
+      weightDampener: typeof adjustments.weightDampener === 'number' ? adjustments.weightDampener : 1.0,
+      quarantined: Boolean(adjustments.quarantined),
+    };
   }
 
   /**
@@ -95,8 +117,11 @@ export class BaseAlgorithm {
       slDist = atr;
     }
 
-    tpDist = Math.round(Math.max(0.5, tpDist) * 100) / 100;
-    slDist = Math.round(Math.max(0.5, slDist) * 100) / 100;
+    const targetMult = this.healingAdjustments?.targetMultiplier || 1.0;
+    const stopMult = this.healingAdjustments?.stopMultiplier || 1.0;
+
+    tpDist = Math.round(Math.max(0.5, tpDist * targetMult) * 100) / 100;
+    slDist = Math.round(Math.max(0.5, slDist * stopMult) * 100) / 100;
 
     let tpPrice = null;
     let slPrice = null;
@@ -127,10 +152,22 @@ export class BaseAlgorithm {
 
   /**
    * Get current signal result (called by ensemble, paper trading, and strategy engines)
+   * Enforces self-healing parameters: confidence hurdle, stop multiplier, and quarantine
    * @param {Float64Array} [features] Optional features to evaluate dynamic policy
    * @param {Object} [marketContext] Live market context (price, atr, movementPrediction)
    */
   getSignal(features = null, marketContext = null) {
+    if (this.healingAdjustments?.quarantined) {
+      return {
+        signal: 0,
+        conf: 0,
+        direction: 0,
+        quarantined: true,
+        healingAdjustments: { ...this.healingAdjustments },
+        metrics: { ...this.metrics, quarantined: true, status: 'QUARANTINED' },
+      };
+    }
+
     if (features && typeof this.predict === 'function') {
       try {
         const pred = this.predict(features);
@@ -140,10 +177,23 @@ export class BaseAlgorithm {
         }
       } catch (e) {}
     }
+
+    const hurdle = this.healingAdjustments?.confidenceHurdle || 0.40;
+    const rawConf = clamp(this.confidence, 0, 1);
+    let effectiveSignal = clamp(this.signal, -1, 1);
+    let effectiveConf = rawConf;
+
+    // Active parameter enforcement: Suppress signal if confidence does not clear the self-healing hurdle
+    if (effectiveConf < hurdle) {
+      effectiveSignal = 0;
+    }
+
     const base = {
-      signal: clamp(this.signal, -1, 1),
-      conf: clamp(this.confidence, 0, 1),
-      direction: this.signal > 0.05 ? 1 : this.signal < -0.05 ? -1 : 0,
+      signal: effectiveSignal,
+      conf: effectiveConf,
+      direction: effectiveSignal > 0.05 ? 1 : effectiveSignal < -0.05 ? -1 : 0,
+      quarantined: false,
+      healingAdjustments: { ...this.healingAdjustments },
       metrics: { ...this.metrics },
     };
 

@@ -61,13 +61,47 @@ class StrategyWeightEngine:
             s: [] for s in self.base_weights
         }
 
-    def record_outcome(self, strategy_name: str, was_profitable: bool):
-        """Update recent accuracy tracker."""
+    def record_outcome(self, strategy_name: str, was_profitable: bool, db=None):
+        """Update recent accuracy tracker and persist ALL strategy weights globally.
+
+        Args:
+            strategy_name: One of the 5 strategy keys.
+            was_profitable: Whether the trade that credited this strategy was a win.
+            db: Optional Database instance. When provided, the full weight state for
+                ALL strategies is immediately flushed to SQLite so the self-evolving
+                weights are permanent and shared across restarts.
+        """
         if strategy_name in self.performance_history:
             history = self.performance_history[strategy_name]
             history.append(was_profitable)
             if len(history) > 40:
                 history.pop(0)
+
+        # ——— Persist globally after EVERY outcome (all algos, not just the updated one) ———
+        if db is not None:
+            self.save_to_db(db)
+
+    def save_to_db(self, db) -> None:
+        """Flush the complete weight state (base_weights + performance_history for all strategies)
+        to the database so self-evolving updates are permanent across restarts.
+        """
+        db.save_weight_state(self.base_weights, self.performance_history)
+
+    @classmethod
+    def load_from_db(cls, db, fallback_base_weights: dict | None = None) -> "StrategyWeightEngine":
+        """Restore a StrategyWeightEngine from the database.
+
+        If no persisted state exists yet, falls back to default equal weights so
+        the first session starts clean and subsequent restarts resume from where
+        the engine left off.
+        """
+        result = db.load_weight_state()
+        if result is not None:
+            base_weights, performance_history = result
+            engine = cls(base_weights=base_weights)
+            engine.performance_history = performance_history
+            return engine
+        return cls(base_weights=fallback_base_weights)
 
     def compute_weights(self, regime: str) -> dict[str, float]:
         """Compute regime-adjusted and performance-scaled normalized weights."""
@@ -95,3 +129,24 @@ class StrategyWeightEngine:
             return {s: 1.0 / n for s in raw_weights}
 
         return {s: round(w / total, 4) for s, w in raw_weights.items()}
+
+    def get_empirical_win_rate(self, regime: str = "SIDEWAYS") -> float:
+        """Calculate empirical win rate from rolling performance history or conservative regime prior."""
+        all_outcomes = []
+        for outcomes in self.performance_history.values():
+            all_outcomes.extend(outcomes)
+        if len(all_outcomes) >= 10:
+            return float(sum(all_outcomes) / len(all_outcomes))
+
+        regime_priors = {
+            "STRONG_UPTREND": 0.55,
+            "STRONG_DOWNTREND": 0.55,
+            "BREAKOUT": 0.52,
+            "BREAKDOWN": 0.52,
+            "SIDEWAYS": 0.45,
+            "MEAN_REVERTING": 0.48,
+            "HIGH_VOL": 0.42,
+            "TRANSITION": 0.44,
+        }
+        return regime_priors.get(regime, 0.45)
+

@@ -151,3 +151,16 @@ API documentation will be available at: `http://localhost:8000/docs`.
 - `GET /risk` or `GET /risk/ETHUSDT` — Portfolio risk status, sizing recommendations, open positions.
 - `GET /performance` — Win rate, PnL, aggregate institutional metrics.
 - `WS /ws/live` — Real-time continuous WebSocket stream of Ethereum signals and price updates.
+
+---
+
+## Production Security Checklist
+
+Before deploying in `APP_ENV=production`, ensure:
+
+1. **`APP_ENV=production`**: Enables strict security mode.
+2. **`API_AUTH_TOKEN`**: Must be set to a secure secret token (e.g. `openssl rand -hex 32`). Enforced for REST endpoints.
+3. **`CORS_ORIGINS`**: Explicitly specify allowed origins (e.g. `https://your-domain.com`). Wildcard `*` is strictly blocked in production.
+4. **Exchange Credentials**: Set `DELTA_API_KEY` and `DELTA_API_SECRET` via environment variables; never commit credentials to VCS.
+5. **Database Path**: Set `DATABASE_PATH` to a persistent, volume-mounted location.
+

@@ -1,0 +1,21 @@
+name: Trading Strategy CI
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r backend/requirements.txt
+      - run: cd backend && python -m pytest tests/ -v --tb=short
+      - run: cd backend && python -c "from config import settings; print('Config OK')"
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t trading-strategy ./backend
+      - run: docker run --rm trading-strategy python -c "from strategies import TrendStrategy; print('OK')"

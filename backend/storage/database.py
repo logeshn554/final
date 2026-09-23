@@ -6,6 +6,7 @@ from __future__ import annotations
 import sqlite3
 import os
 import json
+import time
 import logging
 from storage.models import TradeRecord, SignalLog
 
@@ -16,7 +17,11 @@ class Database:
     """Manages SQLite storage for trades, signals, and regime-strategy performance tracking."""
 
     def __init__(self, db_path: str = "trades.db"):
-        self.db_path = db_path
+        if not os.path.isabs(db_path):
+            root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            self.db_path = os.path.join(root_dir, db_path)
+        else:
+            self.db_path = db_path
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -51,6 +56,28 @@ class Database:
                 strategy_votes TEXT,
                 opened_at REAL,
                 closed_at REAL
+            )
+            """)
+
+            cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_trades_closed_at ON trades(closed_at);
+            """)
+
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS open_positions (
+                id TEXT PRIMARY KEY,
+                symbol TEXT,
+                direction TEXT,
+                entry_price REAL,
+                stop_price REAL,
+                target_price REAL,
+                size REAL,
+                notional_usd REAL,
+                regime TEXT,
+                strategy_votes TEXT,
+                opened_at REAL,
+                realized_pnl_usd REAL,
+                initial_size REAL
             )
             """)
 
@@ -124,7 +151,89 @@ class Database:
                 updated_at REAL
             )
             """)
+            # ─── Persistent Strategy Weights (Global Self-Evolving) ─────────
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_weights (
+                strategy_name TEXT PRIMARY KEY,
+                base_weight   REAL NOT NULL DEFAULT 1.0,
+                performance_history TEXT NOT NULL DEFAULT '[]',
+                updated_at    REAL NOT NULL DEFAULT 0
+            )
+            """)
+
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS delta_live_trades (
+                id TEXT PRIMARY KEY,
+                order_id TEXT,
+                symbol TEXT,
+                product_id INTEGER,
+                direction TEXT,
+                size INTEGER,
+                entry_price REAL,
+                take_profit_price REAL,
+                stop_loss_price REAL,
+                leverage INTEGER,
+                status TEXT,
+                created_at REAL
+            )
+            """)
             conn.commit()
+
+    def save_weight_state(self, base_weights: dict, performance_history: dict) -> None:
+        """Atomically persist ALL strategy base-weights and rolling performance history.
+
+        Called every time any strategy outcome is recorded so the self-evolving
+        weights survive engine restarts across all algorithms simultaneously.
+        """
+        import time as _time
+        now = _time.time()
+        try:
+            with self._get_conn() as conn:
+                for strat_name, base_w in base_weights.items():
+                    history = performance_history.get(strat_name, [])
+                    conn.execute("""
+                    INSERT INTO strategy_weights (strategy_name, base_weight, performance_history, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(strategy_name) DO UPDATE SET
+                        base_weight = excluded.base_weight,
+                        performance_history = excluded.performance_history,
+                        updated_at = excluded.updated_at
+                    """, (strat_name, base_w, json.dumps(history), now))
+                conn.commit()
+                logger.debug("[WeightPersistence] Saved weights for %d strategies.", len(base_weights))
+        except Exception as e:
+            logger.error("[WeightPersistence] Failed to save weight state: %s", e)
+
+    def load_weight_state(self) -> tuple[dict, dict] | None:
+        """Load persisted strategy weights from the database.
+
+        Returns:
+            (base_weights, performance_history) or None if no data exists yet.
+        """
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT strategy_name, base_weight, performance_history FROM strategy_weights")
+                rows = cursor.fetchall()
+                if not rows:
+                    return None
+                base_weights: dict = {}
+                performance_history: dict = {}
+                for row in rows:
+                    strat = row["strategy_name"]
+                    base_weights[strat] = float(row["base_weight"])
+                    try:
+                        performance_history[strat] = json.loads(row["performance_history"])
+                    except Exception:
+                        performance_history[strat] = []
+                logger.info(
+                    "[WeightPersistence] Restored weights for: %s",
+                    list(base_weights.keys())
+                )
+                return base_weights, performance_history
+        except Exception as e:
+            logger.error("[WeightPersistence] Failed to load weight state: %s", e)
+            return None
 
     def record_trade(self, trade: TradeRecord):
         """Insert completed trade record."""
@@ -317,4 +426,127 @@ class Database:
                     "win_rate": round(r["win_rate"] or 0.0, 4)
                 }
             return breakdown
+
+    # ─── Open Positions (Crash Recovery / M4) ───────────────────────────
+
+    def save_open_position(self, pos_data: dict) -> None:
+        """Persist currently active position to SQLite for restart recovery."""
+        try:
+            with self._get_conn() as conn:
+                conn.execute("""
+                INSERT OR REPLACE INTO open_positions (
+                    id, symbol, direction, entry_price, stop_price, target_price,
+                    size, notional_usd, regime, strategy_votes, opened_at,
+                    realized_pnl_usd, initial_size
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    pos_data["id"], pos_data["symbol"], pos_data["direction"],
+                    pos_data["entry_price"], pos_data.get("current_stop", pos_data.get("stop_price", 0.0)),
+                    pos_data["target_price"], pos_data["size"], pos_data["notional_usd"],
+                    pos_data.get("regime_at_entry", pos_data.get("regime", "UNKNOWN")),
+                    json.dumps(pos_data.get("strategy_votes", {})) if isinstance(pos_data.get("strategy_votes"), dict) else str(pos_data.get("strategy_votes", "{}")),
+                    pos_data.get("opened_at", 0.0),
+                    pos_data.get("realized_pnl_usd", 0.0),
+                    pos_data.get("initial_size", pos_data["size"]),
+                ))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to save open position: {e}")
+
+    def delete_open_position(self, pos_id: str) -> None:
+        """Remove closed position from active positions table."""
+        try:
+            with self._get_conn() as conn:
+                conn.execute("DELETE FROM open_positions WHERE id = ?", (pos_id,))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to delete open position: {e}")
+
+    def load_open_position(self) -> dict | None:
+        """Load any unrestored open position after crash/restart."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM open_positions ORDER BY opened_at DESC LIMIT 1")
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                d = dict(row)
+                if isinstance(d.get("strategy_votes"), str):
+                    try:
+                        d["strategy_votes"] = json.loads(d["strategy_votes"])
+                    except Exception:
+                        pass
+                return d
+        except Exception as e:
+            logger.error(f"Failed to load open position: {e}")
+            return None
+
+    # ─── Async Database Support (C6) ────────────────────────────────────
+
+    async def init_async(self) -> None:
+        """Async schema initialization via aiosqlite."""
+        try:
+            import aiosqlite
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("PRAGMA journal_mode=WAL;")
+                await db.execute("PRAGMA busy_timeout=10000;")
+                await db.commit()
+        except ImportError:
+            pass
+
+    async def record_trade_async(self, trade: TradeRecord) -> None:
+        """Async record trade to prevent event-loop starvation."""
+        import asyncio
+        await asyncio.to_thread(self.record_trade, trade)
+
+    async def log_signal_async(self, sig: SignalLog) -> None:
+        """Async record signal to prevent event-loop starvation."""
+        import asyncio
+        await asyncio.to_thread(self.log_signal, sig)
+
+    def log_delta_trade(self, data: dict) -> None:
+        """Record a live Delta Exchange order execution."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO delta_live_trades (
+                        id, order_id, symbol, product_id, direction, size,
+                        entry_price, take_profit_price, stop_loss_price, leverage, status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(data.get("id") or data.get("order_id") or time.time()),
+                        str(data.get("order_id", "")),
+                        str(data.get("symbol", "ETHUSD")),
+                        int(data.get("product_id", 3136)),
+                        str(data.get("side", data.get("direction", "BUY"))).upper(),
+                        int(data.get("size", 1)),
+                        float(data.get("entry_price", 0.0)),
+                        float(data.get("take_profit_price", 0.0)),
+                        float(data.get("stop_loss_price", 0.0)),
+                        int(data.get("leverage", 10)),
+                        str(data.get("status", "executed")),
+                        float(data.get("timestamp", time.time())),
+                    ),
+                )
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to log Delta trade: {e}")
+
+    def get_delta_trade_count(self) -> int:
+        """Count total completed live trades on Delta Exchange."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM delta_live_trades WHERE status = 'executed'")
+                row = cursor.fetchone()
+                return int(row[0]) if row else 0
+        except Exception as e:
+            logger.error(f"Failed to get Delta trade count: {e}")
+            return 0
+
+
 

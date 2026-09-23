@@ -35,7 +35,7 @@ import {
   CPOLagrangianAlgo, OptionCriticHierarchicalAlgo,
 } from './safe-hierarchical-rl.js';
 
-/** Create all algorithm instances (original 34 + research-grade upgrades 35..43) */
+/** Create all 43 algorithm instances (Original 34 value/policy/model/advanced + Research-Grade 35..43) */
 export function createAlgorithms() {
   return [
     new MarkovChainAlgo(),        // 1

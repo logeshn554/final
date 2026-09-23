@@ -2110,7 +2110,6 @@ export function renderActiveTradeSignal() {
           </div>
         </div>
       </div>
-      <div style="display:flex;align-items:center;gap:8px;">
         <!-- Real-Time Manual Action Buttons -->
         ${isTradeActive ? `
           <button onclick="window._manualCloseTrade()" style="background:rgba(239,68,68,0.2);border:1.5px solid var(--red);color:var(--red);font-weight:900;font-size:10px;padding:4px 10px;border-radius:4px;cursor:pointer;display:flex;align-items:center;gap:4px;" title="Instantly close current active trade at market price and record exit timestamp">
@@ -2127,6 +2126,48 @@ export function renderActiveTradeSignal() {
             <span>SELL ETH</span>
           </button>
         `}
+        ${(() => {
+          const count = Number(STATE.deltaTradesCount || STATE.pythonEngine?.decision?.delta_trades_count || 0);
+          const limit = Number(STATE.deltaTradesLimit || 5);
+          const remaining = Math.max(0, limit - count);
+          const limitReached = count >= limit;
+          const curPrice = STATE.price || 2700;
+          const currentTp = STATE.masterTrade?.tpPrice ? Number(STATE.masterTrade.tpPrice).toFixed(2) : (curPrice + 25).toFixed(2);
+          const currentSp = STATE.masterTrade?.spPrice ? Number(STATE.masterTrade.spPrice).toFixed(2) : (curPrice - 18).toFixed(2);
+          const btnTitle = limitReached
+            ? 'Delta 5-trade limit reached'
+            : `Send immediate 1-lot order to Delta Exchange India live with TP ($${currentTp}) and SP ($${currentSp})`;
+          const isDeltaEnabled = STATE.deltaTradingEnabled !== false;
+          return `
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+            <!-- Delta Live Trading ON/OFF Toggle Button -->
+            <button onclick="window._toggleDeltaTrading()" style="${isDeltaEnabled ? 'background:linear-gradient(135deg, rgba(16,185,129,0.22), rgba(0,212,255,0.18));border:1.5px solid var(--green);color:#fff;box-shadow:0 0 10px rgba(16,185,129,0.3);' : 'background:rgba(239,68,68,0.18);border:1.5px solid var(--red);color:var(--red);opacity:0.9;'}font-weight:900;font-size:10px;padding:4px 10px;border-radius:4px;cursor:pointer;display:flex;align-items:center;gap:5px;" title="Click to toggle Delta Exchange live order execution ON or OFF">
+              <span class="live-dot" style="background:${isDeltaEnabled ? 'var(--green)' : 'var(--red)'};width:7px;height:7px;box-shadow:0 0 6px ${isDeltaEnabled ? 'var(--green)' : 'var(--red)'};"></span>
+              <span>DELTA TRADING: <b style="color:${isDeltaEnabled ? 'var(--green)' : 'var(--red)'};">${isDeltaEnabled ? 'ON' : 'OFF'}</b></span>
+            </button>
+
+            <!-- Delta 1-Lot Order Placement Button -->
+            <button onclick="window._sendLiveDeltaTrade()" ${limitReached ? 'disabled style="background:rgba(239,68,68,0.2);border:1.5px solid var(--red);color:var(--red);opacity:0.6;cursor:not-allowed;font-weight:900;font-size:10px;padding:4px 10px;border-radius:4px;display:flex;align-items:center;gap:4px;" title="Delta 5-trade limit reached"' : (!isDeltaEnabled ? 'style="background:rgba(239,68,68,0.14);border:1.5px solid var(--red);color:var(--red);font-weight:900;font-size:10px;padding:4px 10px;border-radius:4px;cursor:pointer;display:flex;align-items:center;gap:4px;" title="Delta Trading is OFF - click DELTA TRADING ON to enable"' : `style="background:linear-gradient(135deg, rgba(0,212,255,0.25), rgba(16,185,129,0.25));border:1.5px solid var(--accent);color:#fff;font-weight:900;font-size:10px;padding:4px 10px;border-radius:4px;cursor:pointer;display:flex;align-items:center;gap:4px;box-shadow:0 0 10px rgba(0,212,255,0.3);" title="${btnTitle}"`)}>
+              <span>${limitReached ? '🔒' : (!isDeltaEnabled ? '⏸️' : '🚀')}</span>
+              <span>${limitReached ? 'DELTA LIMIT (5/5)' : 'DELTA LIVE 1-LOT'}</span>
+              ${!limitReached ? `<span style="font-size:8px;opacity:0.85;padding-left:2px;">(TP/SP)</span>` : ''}
+            </button>
+
+            <!-- Auto-Trade Status Badge -->
+            <span class="badge" style="background:${limitReached ? 'rgba(239,68,68,0.18)' : (!isDeltaEnabled ? 'rgba(239,68,68,0.15)' : 'rgba(16,185,129,0.14)')};color:${limitReached ? 'var(--red)' : (!isDeltaEnabled ? 'var(--red)' : 'var(--green)')};border:1.5px solid ${limitReached ? 'var(--red)' : (!isDeltaEnabled ? 'var(--red)' : 'var(--green)')};font-size:8.5px;font-weight:900;padding:2px 7px;display:flex;align-items:center;gap:4px;" title="${!isDeltaEnabled ? 'Delta live order execution is currently OFF / paused' : (limitReached ? 'Delta 5-trade limit reached' : `Automatic execution armed with TP ($${currentTp}) and SP ($${currentSp})`)}">
+              <span class="live-dot" style="background:${limitReached ? 'var(--red)' : (!isDeltaEnabled ? 'var(--red)' : 'var(--green)')};width:6px;height:6px;box-shadow:0 0 6px ${limitReached ? 'var(--red)' : (!isDeltaEnabled ? 'var(--red)' : 'var(--green)')};"></span>
+              <span>${limitReached ? 'AUTO-TRADE: LOCKED' : (!isDeltaEnabled ? 'AUTO-TRADE: OFF (PAUSED)' : 'AUTO-TRADE: ARMED')}</span>
+            </span>
+
+            <!-- Counter Badge -->
+            <span class="badge" style="background:${limitReached ? 'rgba(239,68,68,0.2)' : 'rgba(0,212,255,0.14)'};color:${limitReached ? 'var(--red)' : 'var(--accent)'};border:1.5px solid ${limitReached ? 'var(--red)' : 'var(--accent)'};font-size:8.5px;font-weight:900;padding:2px 7px;display:flex;align-items:center;gap:3px;" title="Total live trades executed on Delta Exchange India (Max 5 allowed)">
+              <span>TRADES:</span>
+              <b style="color:${limitReached ? 'var(--red)' : '#10b981'};font-size:10px;">${count} / ${limit}</b>
+              <span style="font-size:7px;color:var(--muted);">(${remaining} left)</span>
+            </span>
+          </div>
+          `;
+        })()}
         <span class="hms-winrate-pill" title="Dynamic Win Rate: Updated live when TP or SP triggers">
           <span style="color:var(--green);font-weight:900;font-size:9px;">🏆 WIN RATE:</span>
           <span style="color:var(--green);font-weight:900;font-size:12px;">${stats.winRate}%</span>
@@ -3537,55 +3578,6 @@ export function renderStrategyPerformancePanel() {
       </div>
     </div>
 
-    <!-- Dynamic Movement Distribution HUD (Strictly ZERO Fixed % TP/SL) -->
-    <div style="background:rgba(10,15,30,0.8);border:1.5px solid rgba(0,212,255,0.3);border-radius:5px;padding:8px 10px;margin-bottom:10px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;border-bottom:1px solid rgba(0,212,255,0.15);padding-bottom:4px;">
-        <div style="display:flex;align-items:center;gap:6px;">
-          <span style="font-size:14px;">🎯</span>
-          <span style="font-size:9px;font-weight:900;color:var(--accent);letter-spacing:0.5px;">
-            DYNAMIC MOVEMENT DISTRIBUTION ENGINE (ZERO FIXED % TP/SL)
-          </span>
-        </div>
-        <span class="badge" style="background:rgba(16,185,129,0.15);color:var(--green);font-size:7px;font-weight:800;padding:1px 5px;">
-          PERFORMANCE-WEIGHTED CONSENSUS: ${weightedAgree.agreementPct || 0}%
-        </span>
-      </div>
-
-      <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:6px;font-size:8px;">
-        <!-- Dynamic Entry -->
-        <div style="background:rgba(0,0,0,0.3);padding:5px 8px;border-radius:4px;border-left:3px solid var(--accent);">
-          <div style="color:var(--muted);font-weight:800;font-size:7px;">1. DYNAMIC ENTRY PRICE</div>
-          <div style="font-size:12px;font-weight:900;color:var(--accent);margin:2px 0;">$${entryPrice.toFixed(2)}</div>
-          <div style="color:var(--muted);font-size:6.5px;">Current Binance Tick Level</div>
-        </div>
-
-        <!-- Dynamic Favorable Target -->
-        <div style="background:rgba(0,0,0,0.3);padding:5px 8px;border-radius:4px;border-left:3px solid var(--green);">
-          <div style="color:var(--green);font-weight:800;font-size:7px;">2. DYNAMIC TAKE PROFIT (TP)</div>
-          <div style="font-size:12px;font-weight:900;color:var(--green);margin:2px 0;">$${targetPrice.toFixed(2)}</div>
-          <div style="color:var(--green);font-size:6.5px;">+$${favDist.toFixed(1)} pts (${favProb}% conditional prob)</div>
-        </div>
-
-        <!-- Dynamic Adverse Stop -->
-        <div style="background:rgba(0,0,0,0.3);padding:5px 8px;border-radius:4px;border-left:3px solid var(--red);">
-          <div style="color:var(--red);font-weight:800;font-size:7px;">3. DYNAMIC STOP LEVEL (SL)</div>
-          <div style="font-size:12px;font-weight:900;color:var(--red);margin:2px 0;">$${stopPrice.toFixed(2)}</div>
-          <div style="color:var(--red);font-size:6.5px;">-$${advDist.toFixed(1)} pts (MAE structure boundary)</div>
-        </div>
-
-        <!-- Weighted Consensus -->
-        <div style="background:rgba(0,0,0,0.3);padding:5px 8px;border-radius:4px;border-left:3px solid var(--warn);">
-          <div style="color:var(--warn);font-weight:800;font-size:7px;">4. MODEL QUORUM & VOTES</div>
-          <div style="font-size:12px;font-weight:900;color:var(--text);margin:2px 0;">
-            ${weightedAgree.dominantAction || 'HOLD'}
-          </div>
-          <div style="color:var(--muted);font-size:6.5px;">
-            ${weightedAgree.rawBullVotes || 0} Bull / ${weightedAgree.rawBearVotes || 0} Bear (Weighted: ${weightedAgree.agreementPct || 0}%)
-          </div>
-        </div>
-      </div>
-    </div>
-
     <!-- Leaderboard Table Controls & Header -->
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;font-size:8px;">
       <div style="display:flex;align-items:center;gap:6px;">
@@ -3684,8 +3676,14 @@ export function renderMasterDecisionBox() {
 
   // Dynamic TP & SL derived purely from Mastermind analysis (ZERO hardcoded multipliers or ratios)
   const mp = STATE.movementPrediction;
-  const tpDistance = md?.targetRange?.base ? Math.abs(md.targetRange.base - price) : ((STATE.masterTrade && STATE.masterTrade.tpDistance > 0) ? STATE.masterTrade.tpDistance : atr);
-  const slDistance = md?.stopRange?.riskDistance || ((STATE.masterTrade && STATE.masterTrade.slDistance > 0) ? STATE.masterTrade.slDistance : atr);
+  const tpDistance = (md?.movement?.favorable?.selectedDistance && md.movement.favorable.selectedDistance > 0)
+    ? md.movement.favorable.selectedDistance
+    : (md?.execution?.takeProfitPrice ? Math.abs(md.execution.takeProfitPrice - price)
+    : ((STATE.masterTrade && STATE.masterTrade.tpDistance > 0) ? STATE.masterTrade.tpDistance : atr));
+  const slDistance = (md?.movement?.adverse?.selectedStopDistance && md.movement.adverse.selectedStopDistance > 0)
+    ? md.movement.adverse.selectedStopDistance
+    : (md?.execution?.stopPrice ? Math.abs(md.execution.stopPrice - price)
+    : ((STATE.masterTrade && STATE.masterTrade.slDistance > 0) ? STATE.masterTrade.slDistance : atr));
 
   // Dynamic Kelly Position Sizing
   const dynamicSizeETH = md?.risk?.positionSizeETH || parseFloat(STATE.tradeSetup?.positionETH) || 0.10;
@@ -3719,7 +3717,7 @@ export function renderMasterDecisionBox() {
   let verdictBg = 'rgba(245,158,11,0.14)';
   let verdictBorder = 'var(--warn)';
   let verdictIcon = '🟡';
-  let verdictText = md?.risk?.rejectionReason || md?.reason || (mt.scanReason ? mt.scanReason.toUpperCase() : 'HOLD / AWAITING MASTERMIND CONFLUENCE');
+  let verdictText = mt.scanReason || md?.reason || 'HOLD / AWAITING MASTERMIND CONFLUENCE';
 
   if (isTradeActive) {
     masterVerdict = isBuy ? 'BUY (LOCKED)' : 'SELL (LOCKED)';
@@ -3803,6 +3801,10 @@ export function renderMasterDecisionBox() {
     ? (parseFloat(strat.bandwidth) * 100).toFixed(2) 
     : ((atr / price) * 100).toFixed(2);
 
+  const top5Leaders = Array.isArray(md?.top5ProfitLeaders) ? md.top5ProfitLeaders : [];
+  const top5Cons = md?.top5Consensus || {};
+  const top5ConsScore = Number(top5Cons.score) || 0;
+
   el.innerHTML = `
     <!-- Header -->
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;border-bottom:1px solid rgba(26,48,96,0.6);padding-bottom:6px;">
@@ -3818,6 +3820,13 @@ export function renderMasterDecisionBox() {
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:6px;">
+        <button onclick="window._toggleDeltaTrading()" class="badge" style="background:${STATE.deltaTradingEnabled !== false ? 'rgba(16,185,129,0.18)' : 'rgba(239,68,68,0.18)'};color:${STATE.deltaTradingEnabled !== false ? 'var(--green)' : 'var(--red)'};border:1.5px solid ${STATE.deltaTradingEnabled !== false ? 'var(--green)' : 'var(--red)'};font-size:7.5px;font-weight:900;padding:2px 7px;cursor:pointer;display:flex;align-items:center;gap:4px;" title="Click to toggle Delta Exchange live trading ON/OFF">
+          <span class="live-dot" style="background:${STATE.deltaTradingEnabled !== false ? 'var(--green)' : 'var(--red)'};width:5px;height:5px;"></span>
+          <span>DELTA TRADING: <b>${STATE.deltaTradingEnabled !== false ? 'ON' : 'OFF'}</b></span>
+        </button>
+        <span class="badge" style="background:${(STATE.deltaTradesCount || 0) >= 5 ? 'rgba(239,68,68,0.2)' : 'rgba(0,212,255,0.15)'};color:${(STATE.deltaTradesCount || 0) >= 5 ? 'var(--red)' : 'var(--accent)'};border:1px solid ${(STATE.deltaTradesCount || 0) >= 5 ? 'var(--red)' : 'var(--accent)'};font-size:7.5px;font-weight:900;padding:2px 7px;" title="Total Delta Exchange Trades: Limit of 5">
+          🎯 DELTA TRADES: <b style="color:${(STATE.deltaTradesCount || 0) >= 5 ? 'var(--red)' : 'var(--green)'};font-size:8.5px;">${STATE.deltaTradesCount || 0} / 5</b>
+        </span>
         <span class="badge" style="background:rgba(16,185,129,0.15);color:var(--green);border:1px solid var(--green);font-size:7.5px;font-weight:800;padding:2px 6px;">
           🏆 WIN RATE: ${mt.stats?.winRate}% (${mt.stats?.wins}W / ${mt.stats?.losses}L)
         </span>
@@ -3983,6 +3992,74 @@ export function renderMasterDecisionBox() {
         </div>
       </div>
     </div>
+
+    <!-- 🏆 TOP 5 WINNING-RATE RL ALGORITHMS (MASTERMIND PREDICTION ENGINE) -->
+    <div style="background:rgba(15,23,42,0.85);border:1.5px solid rgba(245,158,11,0.4);border-radius:6px;padding:8px 10px;margin-bottom:8px;box-shadow:0 0 14px rgba(245,158,11,0.12);">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;border-bottom:1px solid rgba(245,158,11,0.25);padding-bottom:4px;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span style="font-size:14px;">🏆</span>
+          <div>
+            <div style="font-size:9.5px;font-weight:900;color:#f59e0b;letter-spacing:0.5px;">
+              TOP 5 WINNING-RATE RL ALGORITHMS · MASTERMIND PREDICTION DRIVERS (55% CORE WEIGHT)
+            </div>
+            <div style="font-size:7.5px;color:var(--muted);">
+              Reinforcement Learning algorithms dynamically ranked by empirical win rate &amp; realized profit directly determining MasterMind prediction · ML disconnected
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:5px;">
+          <span class="badge" style="background:${top5ConsScore > 0.05 ? 'rgba(16,185,129,0.2)' : top5ConsScore < -0.05 ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)'};color:${top5ConsScore > 0.05 ? 'var(--green)' : top5ConsScore < -0.05 ? 'var(--red)' : '#f59e0b'};border:1px solid ${top5ConsScore > 0.05 ? 'var(--green)' : top5ConsScore < -0.05 ? 'var(--red)' : '#f59e0b'};font-size:8px;font-weight:900;padding:2px 7px;">
+            RL CONSENSUS: ${top5ConsScore > 0.05 ? `🟢 BULLISH (${(top5ConsScore * 100).toFixed(0)}%)` : top5ConsScore < -0.05 ? `🔴 BEARISH (${(top5ConsScore * 100).toFixed(0)}%)` : '🟡 NEUTRAL / BALANCED'}
+          </span>
+        </div>
+      </div>
+
+      <!-- Top 5 RL Algorithms Grid -->
+      <div style="display:grid;grid-template-columns:repeat(${Math.max(1, top5Leaders.length || 5)}, 1fr);gap:5px;margin-bottom:6px;">
+        ${top5Leaders.length > 0 ? top5Leaders.map((s, idx) => {
+          const sig = s.currentSignal || 'HOLD';
+          const isSigBuy = sig === 'BUY' || sig === 'LONG';
+          const isSigSell = sig === 'SELL' || sig === 'SHORT';
+          const sigBadgeColor = isSigBuy ? 'var(--green)' : isSigSell ? 'var(--red)' : 'var(--muted)';
+          const sigBadgeBg = isSigBuy ? 'rgba(16,185,129,0.15)' : isSigSell ? 'rgba(239,68,68,0.15)' : 'rgba(100,116,139,0.15)';
+          const profitColor = (s.netProfitUSD || 0) > 0 ? 'var(--green)' : (s.netProfitUSD || 0) < 0 ? 'var(--red)' : 'var(--text)';
+          return `
+          <div style="background:rgba(0,0,0,0.35);border:1px solid ${idx === 0 ? 'rgba(245,158,11,0.7)' : 'rgba(26,48,96,0.6)'};border-radius:4px;padding:4px 6px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">
+              <span style="font-size:7.5px;font-weight:900;color:${idx === 0 ? '#f59e0b' : 'var(--muted)'};">#${idx + 1} ${idx === 0 ? 'CHAMP' : ''}</span>
+              <span style="font-size:7px;font-weight:900;background:${sigBadgeBg};color:${sigBadgeColor};border:1px solid ${sigBadgeColor};padding:0 3px;border-radius:2px;">${sig}</span>
+            </div>
+            <div style="font-size:8.5px;font-weight:900;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${s.name || s.id}">
+              <b style="color:${idx === 0 ? 'var(--green)' : 'var(--accent)'};">${s.tag || ''}</b> ${s.name || s.id}
+            </div>
+            ${s.horizon ? `<div style="font-size:6.5px;color:var(--accent2);margin-top:1px;">⏱ ${s.horizon}</div>` : ''}
+            <div style="display:flex;align-items:baseline;justify-content:space-between;margin-top:2px;">
+              <span style="font-size:9.5px;font-weight:900;color:${profitColor};">${(s.netProfitUSD || 0) >= 0 ? '+' : ''}$${Number(s.netProfitUSD || 0).toFixed(1)}</span>
+              <span style="font-size:7.5px;font-weight:800;color:#f59e0b;">${s.profitPct || 0}%</span>
+            </div>
+            <div style="font-size:6.5px;color:var(--muted);margin-top:1px;"><b style="color:var(--green);">${s.winRate || 70}% WR</b> · ${s.totalTrades || s.trades || 0} trades</div>
+          </div>
+          `;
+        }).join('') : `
+          <div style="grid-column:1 / -1;text-align:center;padding:8px;color:var(--muted);font-size:8px;">
+            Awaiting initial paper trading outcomes to rank Top 5 winning-rate RL leaders...
+          </div>
+        `}
+      </div>
+
+      <!-- Synthesis & Steering Info -->
+      <div style="display:flex;align-items:center;justify-content:space-between;font-size:7.5px;color:var(--muted);padding-top:3px;border-top:1px dashed rgba(245,158,11,0.2);">
+        <div>
+          <span>RL Bullish Influence: <b style="color:var(--green);">${top5Cons.bullWeight || 0}%</b></span> · 
+          <span>RL Bearish Influence: <b style="color:var(--red);">${top5Cons.bearWeight || 0}%</b></span> · 
+          <span>Consensus Alignment: <b style="color:var(--text);">${top5Cons.alignedCount || 0} / ${top5Leaders.length || 5}</b></span>
+        </div>
+        <div style="color:#f59e0b;font-weight:700;">
+          55% Weight in MasterMind Prediction Formulation · ML Disconnected
+        </div>
+      </div>
+    </div>
+
     <!-- 🐍 REAL-TIME PYTHON QUANTITATIVE ENGINE (ETHUSDT) -->
     ${(() => {
       const py = STATE.pythonEngine?.decision;
@@ -4020,7 +4097,7 @@ export function renderMasterDecisionBox() {
                 PYTHON 5-STRATEGY ENSEMBLE ENGINE · REAL-TIME ETHUSDT
               </div>
               <div style="font-size:7.5px;color:var(--muted);">
-                Regime: <b style="color:var(--text);">${py.regime?.primary_regime || 'NORMAL'}</b> · Dynamic Market R:R: <b style="color:var(--green);">${py.risk_reward_ratio || '1.50'}</b>
+                Regime: <b style="color:var(--text);">${py.regime?.primary_regime || 'NORMAL'}</b> · Dynamic R:R: <b style="color:var(--green);">${py.risk_reward_ratio || '1.50'}</b> · Delta Executed: <b style="color:${(py.delta_trades_count ?? (STATE.deltaTradesCount || 0)) >= 5 ? 'var(--red)' : 'var(--accent)'};">${py.delta_trades_count ?? (STATE.deltaTradesCount || 0)} / 5 trades</b>
               </div>
             </div>
           </div>
@@ -4132,12 +4209,17 @@ export function renderHeaderMasterSignalArea() {
   // 4. Master Trade Prediction Lifecycle (Single source of truth)
   const headerAtr = parseFloat(strat.atr || STATE.tradeSetup?.atrValue || (price > 0 ? price * 0.0068 : 15.0)) || 15.0;
   const headerMp = STATE.movementPrediction;
-  const headerTpDist = md?.targetRange?.base ? Math.abs(md.targetRange.base - price) : ((STATE.masterTrade && STATE.masterTrade.tpDistance > 0) 
-    ? STATE.masterTrade.tpDistance 
-    : (headerMp?.predictedMovement?.mainMove ? parseFloat(headerMp.predictedMovement.mainMove) : headerAtr));
-  const headerSlDist = md?.stopRange?.riskDistance || ((STATE.masterTrade && STATE.masterTrade.slDistance > 0) 
-    ? STATE.masterTrade.slDistance 
-    : (headerMp?.adverseMovement?.expected ? parseFloat(headerMp.adverseMovement.expected) : headerAtr));
+  const headerTpDist = (md?.movement?.favorable?.selectedDistance && md.movement.favorable.selectedDistance > 0)
+    ? md.movement.favorable.selectedDistance
+    : (md?.execution?.takeProfitPrice ? Math.abs(md.execution.takeProfitPrice - price)
+    : ((STATE.masterTrade && STATE.masterTrade.tpDistance > 0) ? STATE.masterTrade.tpDistance 
+    : (headerMp?.predictedMovement?.mainMove ? parseFloat(headerMp.predictedMovement.mainMove) : headerAtr)));
+
+  const headerSlDist = (md?.movement?.adverse?.selectedStopDistance && md.movement.adverse.selectedStopDistance > 0)
+    ? md.movement.adverse.selectedStopDistance
+    : (md?.execution?.stopPrice ? Math.abs(md.execution.stopPrice - price)
+    : ((STATE.masterTrade && STATE.masterTrade.slDistance > 0) ? STATE.masterTrade.slDistance 
+    : (headerMp?.adverseMovement?.expected ? parseFloat(headerMp.adverseMovement.expected) : headerAtr)));
 
   const mt = STATE.masterTrade || {
     status: 'IDLE',
@@ -4399,7 +4481,7 @@ export function renderHeaderMasterSignalArea() {
         <span class="live-dot" style="background:${md?.approved ? 'var(--green)' : 'var(--warn)'};width:10px;height:10px;margin-right:2px;"></span>
         <div>
           <div class="hms-badge-title" style="color:${md?.approved ? 'var(--green)' : 'var(--warn)'};letter-spacing:0.5px;">${md?.approved ? `MASTER AUTHORIZED ${md.signal}` : 'MASTER SCANNING MARKET'}</div>
-          <div style="font-size:8px;color:var(--text);font-weight:700;line-height:1.2;">${(md?.risk?.rejectionReason || md?.reason || mt.scanReason || 'ANALYZING 43 RL + HJB CONFLUENCE TO TRIGGER SETUP').toUpperCase()}</div>
+          <div style="font-size:8px;color:var(--text);font-weight:700;line-height:1.2;">${(md?.approved ? (md?.reason || `MASTER AUTHORIZED ${md.signal}`) : (mt.scanReason || md?.reason || 'ANALYZING 43 RL + HJB CONFLUENCE TO TRIGGER SETUP')).toUpperCase()}</div>
         </div>
       </div>
       <div class="hms-entry-box">

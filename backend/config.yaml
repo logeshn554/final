@@ -1,6 +1,26 @@
-symbol: ETHUSDT
-timeframes: ["1m", "5m", "15m", "1h"]
+exchange: delta
+symbol: ETHUSD
+timeframes: ["1m", "5m", "15m", "1h", "4h"]
 candle_buffer_size: 1000
+
+cors_origins:
+  - "http://localhost:5173"
+  - "http://localhost:3000"
+
+delta_exchange:
+  env: "india_prod" # "india_prod" | "india_testnet" | "global"
+  symbol: "ETHUSD"
+  rest_urls:
+    - "https://api.india.delta.exchange"
+    - "https://cdn.india.delta.exchange"
+  ws_urls:
+    - "wss://socket.india.delta.exchange"
+  request_timeout: 10
+  max_retries: 4
+  mcp_mode: "trade" # "read" | "trade"
+  lot_size: 1
+  product_id: 3136
+  use_mcp_bridge: false
 
 binance:
   rest_urls:
@@ -23,7 +43,7 @@ engine:
   warm_up_candles: 300
 
 risk:
-  max_portfolio_risk_pct: 2.0
+  max_portfolio_risk_pct: 1.0
   max_position_pct: 15.0
   max_daily_loss_pct: 4.0
   max_drawdown_pct: 12.0

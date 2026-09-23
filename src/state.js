@@ -365,6 +365,15 @@ function createState() {
       },
     },
 
+    // Delta Exchange Live Trading Controls & Status
+    deltaTradingEnabled: (typeof localStorage !== 'undefined' && localStorage.getItem('delta_trading_enabled') !== null)
+      ? localStorage.getItem('delta_trading_enabled') === 'true'
+      : true,
+    deltaTradesCount: 0,
+    deltaTradesLimit: 5,
+    deltaTradesRemaining: 5,
+    deltaLimitReached: false,
+
     // NEXUS-V Institutional Production Strategy Engine State
     productionStrategy: null,
 

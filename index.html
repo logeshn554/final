@@ -28,6 +28,10 @@
         <button class="btn-header" id="btnPaperTradingArena" onclick="window._showPaperTradingArena()" style="background:rgba(16,185,129,0.14);border:1.5px solid var(--green);color:var(--green);font-weight:800;" title="View 43-Algorithm $10 Capital Paper Trading Arena">
           🎮 43-ALGO PAPER TRADING
         </button>
+        <button class="btn-header" id="btnDeltaTradingToggle" onclick="window._toggleDeltaTrading()" style="background:rgba(16,185,129,0.18);border:1.5px solid var(--green);color:var(--green);font-weight:900;display:flex;align-items:center;gap:6px;cursor:pointer;box-shadow:0 0 10px rgba(16,185,129,0.25);" title="Toggle live order execution on Delta Exchange India ON/OFF">
+          <span class="live-dot" id="btnDeltaTradingDot" style="background:var(--green);width:7px;height:7px;box-shadow:0 0 6px var(--green);"></span>
+          <span>DELTA TRADING: <b id="btnDeltaTradingStatusText">ON</b></span>
+        </button>
         <div class="auto-train-badge" id="autoTrainBadge" onclick="window._start6MonthTraining()" style="cursor:pointer;" title="Click to execute 6-month multi-timeframe training across all 43 algorithms"><span class="live-dot" style="background:var(--green);"></span>● 43-RL MODELS · 6-MO REAL DATA + LIVE ONLINE LEARNING</div>
         <div class="prod-badge" id="pythonEngineBadge" onclick="window._switchLayer('python-quant')" style="border:1px solid rgba(0,212,255,0.4);background:rgba(0,212,255,0.08);color:var(--accent);cursor:pointer;" title="Click to view Python Quantitative Engine dashboard (FastAPI on localhost:8000)">
           <span class="live-dot" id="pythonEngineDot" style="background:var(--warn);"></span>

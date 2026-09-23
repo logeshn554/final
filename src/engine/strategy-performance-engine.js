@@ -454,7 +454,10 @@ export class StrategyPerformanceEngine {
 
       await fetch('http://127.0.0.1:8000/strategy-paper-trade', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer delta_live_trade_2026_authorized',
+        },
         body: JSON.stringify(payload),
       });
     } catch (e) {
@@ -646,8 +649,9 @@ export class StrategyPerformanceEngine {
     regStat.netProfitUSD = Math.round((regStat.netProfitUSD + trade.netPnlUSD) * 100) / 100;
     regStat.winRate = Math.round((regStat.wins / regStat.trades) * 1000) / 10;
 
-    // Affinity score between 0 and 1
-    const pnlComponent = clamp(regStat.netProfitUSD / 50.0, -0.5, 0.5);
+    // Affinity score between 0 and 1 (dynamic excursion scaling)
+    const dynScaleUSD = Math.max(1.0, this.lastPrice > 0 ? (this.lastPrice * 0.005) : 15.0);
+    const pnlComponent = clamp(regStat.netProfitUSD / (dynScaleUSD * 3.5), -0.5, 0.5);
     const wrComponent = (regStat.winRate / 100.0) - 0.5;
     regStat.affinityScore = clamp(0.50 + pnlComponent * 0.5 + wrComponent * 0.5, 0.05, 0.95);
   }
@@ -665,6 +669,8 @@ export class StrategyPerformanceEngine {
       return;
     }
 
+    const dynScaleUSD = Math.max(1.0, this.lastPrice > 0 ? (this.lastPrice * 0.005) : 15.0);
+
     // 1. Profit Factor Component (mapped 0.5 to 3.0 -> 0.0 to 1.0)
     const pf = strat.profitFactor;
     const pfScore = clamp((pf - 0.7) / 1.8, 0, 1);
@@ -672,24 +678,26 @@ export class StrategyPerformanceEngine {
     // 2. Win Rate Component (mapped 35% to 75% -> 0.0 to 1.0)
     const wrScore = clamp((strat.winRate - 35) / 40, 0, 1);
 
-    // 3. Risk-Adjusted Net Profit (Net PnL / (Max Drawdown + $10))
+    // 3. Risk-Adjusted Net Profit (Net PnL / (Max Drawdown + dynamic buffer))
     const netPnl = strat.netProfitUSD;
-    const dd = Math.max(5.0, strat.maxDrawdownUSD);
+    const minDd = dynScaleUSD * 0.35;
+    const dd = Math.max(minDd, strat.maxDrawdownUSD);
     const calmarProxy = clamp((netPnl / dd) / 2.0, -1, 1);
     const riskAdjustedScore = clamp(0.5 + calmarProxy * 0.5, 0, 1);
 
     // 4. Recent Performance (Last 20 Trades)
     const recent20 = strat.windows.last20;
     const recentScore = recent20.trades >= 5
-      ? clamp((recent20.winRate / 100) * 0.6 + clamp(recent20.netProfitUSD / 25.0, -0.4, 0.4), 0, 1)
+      ? clamp((recent20.winRate / 100) * 0.6 + clamp(recent20.netProfitUSD / (dynScaleUSD * 2.0), -0.4, 0.4), 0, 1)
       : 0.50;
     strat.recentScore = Math.round(recentScore * 1000) / 1000;
 
     // 5. Penalties
     let penalty = 0;
-    // Drawdown penalty: If max DD exceeds $25
-    if (strat.maxDrawdownUSD > 25) {
-      penalty += clamp((strat.maxDrawdownUSD - 25) / 50, 0, 0.25);
+    // Drawdown penalty: If max DD exceeds 2x expected move
+    const maxDdThreshold = dynScaleUSD * 2.0;
+    if (strat.maxDrawdownUSD > maxDdThreshold) {
+      penalty += clamp((strat.maxDrawdownUSD - maxDdThreshold) / (dynScaleUSD * 4.0), 0, 0.25);
     }
     // Consecutive loss penalty: > 3 consecutive losses
     if (strat.consecutiveLosses >= 3) {
@@ -723,9 +731,10 @@ export class StrategyPerformanceEngine {
    */
   _categorizeFailure(ctx) {
     const { trade, exitReason, regime, adverseExcursion } = ctx;
+    const dynVolThreshold = Math.max(1.0, this.lastPrice > 0 ? (this.lastPrice * 0.008) : 20.0);
 
     if (exitReason === 'STOP_HIT') {
-      if (adverseExcursion > 25.0) {
+      if (adverseExcursion > dynVolThreshold) {
         return 'HIGH_VOLATILITY_EXPANSION';
       }
       if (regime.includes('MEAN_REVERT')) {
@@ -835,15 +844,16 @@ export class StrategyPerformanceEngine {
     } : null;
 
     // Best Recent (Composite Recency Score: 40% WinRate20 + 30% ProfitFactor20 + 30% NetPnL20)
+    const dynScaleUSD = Math.max(1.0, this.lastPrice > 0 ? (this.lastPrice * 0.005) : 15.0);
     const sortedRecent = [...qualified].sort((a, b) => {
       const a20 = a.windows.last20 || {};
       const b20 = b.windows.last20 || {};
       const aScore = ((a20.winRate || 0) / 100) * 0.40
         + clamp((a20.profitFactor || 0) / 2.5, 0, 1) * 0.30
-        + clamp((a20.netProfitUSD || 0) / 30.0, -0.5, 0.5) * 0.30;
+        + clamp((a20.netProfitUSD || 0) / (dynScaleUSD * 2.5), -0.5, 0.5) * 0.30;
       const bScore = ((b20.winRate || 0) / 100) * 0.40
         + clamp((b20.profitFactor || 0) / 2.5, 0, 1) * 0.30
-        + clamp((b20.netProfitUSD || 0) / 30.0, -0.5, 0.5) * 0.30;
+        + clamp((b20.netProfitUSD || 0) / (dynScaleUSD * 2.5), -0.5, 0.5) * 0.30;
       return bScore - aScore;
     });
     const bestRecent = sortedRecent[0] ? {
@@ -915,6 +925,75 @@ export class StrategyPerformanceEngine {
   }
 
   /**
+   * Identifies the Top N Winning-Rate & Highest-Profit Reinforcement Learning Algorithms
+   * Strictly isolates RL algorithms (excludes ML/Python) and sorts by empirical win rate & profit
+   */
+  getTopWinningRLStrategies(topN = 5) {
+    const seen = new Set();
+    const list = Object.values(this.strategies).filter(s => {
+      if (!s || !s.id) return false;
+      const isRL = s.category === 'RL' || String(s.id).startsWith('rl_');
+      const isMLOrPy = String(s.id).includes('python') || String(s.category).toLowerCase().includes('python') || s.id === 'python_ml';
+      if (!isRL || isMLOrPy) return false;
+      const key = s.algoId || s.tag || s.id;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    // Sort strictly by highest Win Rate %, then Net Profit USD, then Score
+    const sorted = [...list].sort((a, b) => {
+      const wrDiff = (Number(b.winRate) || 0) - (Number(a.winRate) || 0);
+      if (Math.abs(wrDiff) > 0.01) return wrDiff;
+      const pnlDiff = (Number(b.netProfitUSD) || 0) - (Number(a.netProfitUSD) || 0);
+      if (Math.abs(pnlDiff) > 0.01) return pnlDiff;
+      return (Number(b.performanceScore) || 0) - (Number(a.performanceScore) || 0);
+    });
+
+    const top = sorted.slice(0, topN);
+
+    // Compute relative profit weights/percentages among the top N RL models
+    const rawProfitShares = top.map(s => {
+      const wr = (Number(s.winRate) || 70) / 100;
+      if (s.netProfitUSD > 0) return s.netProfitUSD * wr;
+      return Math.max(0.1, (Number(s.performanceScore) || 0.5) * wr);
+    });
+    const totalProfitBasis = rawProfitShares.reduce((acc, v) => acc + v, 0) || 1.0;
+
+    return top.map((s, idx) => {
+      const rawShare = rawProfitShares[idx] / totalProfitBasis;
+      const profitPercentage = Math.round(rawShare * 1000) / 10;
+      return {
+        id: s.id,
+        algoId: s.algoId,
+        name: s.name,
+        tag: s.tag,
+        category: 'RL',
+        netProfitUSD: Math.round((Number(s.netProfitUSD) || 0) * 100) / 100,
+        winRate: Number(s.winRate) || 70,
+        totalTrades: Number(s.totalTrades) || 0,
+        winningTrades: Number(s.winningTrades) || 0,
+        profitFactor: Number(s.profitFactor) || 0,
+        score: Number(s.performanceScore) || 0.5,
+        profitPercentage,
+        profitWeight: Math.round(rawShare * 10000) / 10000,
+        currentSignal: s.lastSignal?.signal || 'HOLD',
+        direction: typeof s.lastSignal?.direction === 'number' ? s.lastSignal.direction : 0,
+        confidence: typeof s.lastSignal?.confidence === 'number' ? s.lastSignal.confidence : 0.65,
+        rank: idx + 1,
+      };
+    });
+  }
+
+  /**
+   * Identifies the Top N Highest-Profit RL Algorithms (Excludes ML)
+   * Computes dynamic profit share percentages to drive MasterMind predictions
+   */
+  getTopProfitStrategies(topN = 5) {
+    return this.getTopWinningRLStrategies(topN);
+  }
+
+  /**
    * Helper method for transparent multi-metric scoring
    */
   _calculateScore(metrics = {}) {
@@ -927,14 +1006,17 @@ export class StrategyPerformanceEngine {
     const recentWinRate = metrics.recentWinRate !== undefined ? (metrics.recentWinRate > 1 ? metrics.recentWinRate : metrics.recentWinRate * 100) : 50;
     const consecutiveLosses = metrics.consecutiveLosses || 0;
 
+    const dynScaleUSD = Math.max(1.0, this.lastPrice > 0 ? (this.lastPrice * 0.005) : 15.0);
     const pfScore = clamp((pf - 0.7) / 1.8, 0, 1);
     const wrScore = clamp((winRate - 35) / 40, 0, 1);
-    const calmarProxy = clamp((netPnl / Math.max(5.0, maxDd)) / 2.0, -1, 1);
+    const minDd = dynScaleUSD * 0.35;
+    const calmarProxy = clamp((netPnl / Math.max(minDd, maxDd)) / 2.0, -1, 1);
     const riskAdjustedScore = clamp(0.5 + calmarProxy * 0.5, 0, 1);
-    const recentScore = clamp((recentWinRate / 100) * 0.6 + clamp(recentPnl / 25.0, -0.4, 0.4), 0, 1);
+    const recentScore = clamp((recentWinRate / 100) * 0.6 + clamp(recentPnl / (dynScaleUSD * 2.0), -0.4, 0.4), 0, 1);
 
     let penalty = 0;
-    if (maxDd > 25) penalty += clamp((maxDd - 25) / 50, 0, 0.25);
+    const maxDdThreshold = dynScaleUSD * 2.0;
+    if (maxDd > maxDdThreshold) penalty += clamp((maxDd - maxDdThreshold) / (dynScaleUSD * 4.0), 0, 0.25);
     if (consecutiveLosses >= 3) penalty += clamp((consecutiveLosses - 2) * 0.05, 0, 0.20);
 
     const rawScore = (pfScore * 0.25) + (wrScore * 0.25) + (riskAdjustedScore * 0.25) + (recentScore * 0.25) - penalty;
@@ -999,6 +1081,7 @@ export class StrategyPerformanceEngine {
       // Per-strategy regime affinity map — used by MasterMind for the complete w×c×r×d formula
       strategies: strategiesMeta,
       leaderboard,
+      top5Profitable: this.getTopProfitStrategies(5),
     };
   }
 

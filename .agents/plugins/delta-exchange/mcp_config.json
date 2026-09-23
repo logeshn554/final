@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "delta-exchange": {
+      "command": "uvx",
+      "args": ["delta-exchange-mcp"],
+      "env": {
+        "DELTA_MCP_ENV": "india_prod",
+        "DELTA_MCP_MODE": "read"
+      }
+    }
+  }
+}

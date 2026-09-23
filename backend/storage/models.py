@@ -3,7 +3,7 @@ Storage Models — Dataclasses and schemas for SQLite trade and engine logging.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 import time
 
 
@@ -27,6 +27,9 @@ class TradeRecord:
     strategy_votes: str         # JSON string of strategy signals
     opened_at: float = field(default_factory=time.time)
     closed_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
 @dataclass

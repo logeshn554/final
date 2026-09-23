@@ -21,23 +21,49 @@ logger = logging.getLogger("run")
 ACTIVE_SYMBOL = "ETHUSDT"
 
 
+def _free_port_if_in_use(port: int):
+    """Ensure port is freed on Windows before uvicorn binds to avoid [Errno 10048]."""
+    try:
+        import os
+        import subprocess
+        import time
+        current_pid = os.getpid()
+        cmd = f'powershell -Command "Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess"'
+        res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        pids = set(res.stdout.strip().split())
+        for p in pids:
+            p = p.strip()
+            if p and p.isdigit():
+                pid_int = int(p)
+                if pid_int != current_pid and pid_int > 0:
+                    logger.info(f"Terminating existing process PID {pid_int} on port {port} to prevent Errno 10048...")
+                    subprocess.run(f"taskkill /F /PID {pid_int}", shell=True, capture_output=True)
+                    time.sleep(1.0)
+    except Exception as e:
+        logger.warning(f"Port check/free warning: {e}")
+
+
 def run_api(host: str = "0.0.0.0", port: int = 8000, reload: bool = False):
-    """Start uvicorn server."""
+    """Start uvicorn server with automatic port freeing."""
+    _free_port_if_in_use(port)
     import uvicorn
     logger.info(f"Starting Ethereum (ETHUSDT) Engine Server on http://{host}:{port} (reload={reload})")
     uvicorn.run("api.server:app", host=host, port=port, reload=reload)
 
 
 async def run_signal():
-    """Fetch live data and print complete decision for ETHUSDT."""
+    """Fetch live data and print complete decision for Ethereum."""
     from api.server import engine_ctx
-    logger.info(f"Fetching live {ACTIVE_SYMBOL} klines from Binance...")
+    from config import settings
+    exchange_name = getattr(settings, "exchange", "delta").upper()
+    sym = engine_ctx.symbol
+    logger.info(f"Fetching live {sym} klines from {exchange_name}...")
     for tf in ["1m", "5m", "15m", "1h"]:
-        await engine_ctx.binance_client.fetch_historical_klines(ACTIVE_SYMBOL, tf, limit=200)
+        await engine_ctx.active_client.fetch_historical_klines(sym, tf, limit=200)
 
-    decision = engine_ctx.generate_current_decision(ACTIVE_SYMBOL)
+    decision = engine_ctx.generate_current_decision(sym)
     print("\n" + "=" * 60)
-    print(f"        ETHEREUM ({ACTIVE_SYMBOL}) DYNAMIC ENGINE DECISION")
+    print(f"   ETHEREUM ({sym}) DYNAMIC ENGINE DECISION [{exchange_name}]")
     print("=" * 60)
     print(f"SIGNAL:            {decision['signal']}")
     print(f"CONFIDENCE:        {decision['confidence']:.1%}")
@@ -58,7 +84,9 @@ async def run_signal():
 
 async def run_backtest_cli():
     """Fetch historical Ethereum data and run backtest."""
+    from config import settings
     from data.candle_store import CandleStore
+    from data.delta_client import DeltaExchangeClient
     from data.binance_client import BinanceClient
     from features.technical import compute_all_technical_features
     from features.market_structure import compute_all_structure_features
@@ -67,12 +95,19 @@ async def run_backtest_cli():
     from features.statistical import compute_all_statistical_features
     from backtest.backtester import Backtester
 
+    sym = getattr(settings, "symbol", "ETHUSD")
+    exch = getattr(settings, "exchange", "delta").lower()
     store = CandleStore(buffer_size=1000)
-    client = BinanceClient({"symbol": ACTIVE_SYMBOL}, store)
 
-    logger.info(f"Downloading historical {ACTIVE_SYMBOL} candles for backtesting...")
+    if exch == "delta":
+        client = DeltaExchangeClient(settings.model_dump(), store)
+    else:
+        client = BinanceClient.from_settings(store, settings)
+
+
+    logger.info(f"Downloading historical {sym} candles from {exch.upper()} for backtesting...")
     for tf in ["1m", "5m", "15m", "1h"]:
-        await client.fetch_historical_klines(ACTIVE_SYMBOL, tf, limit=500)
+        await client.fetch_historical_klines(sym, tf, limit=500)
 
     dfs = {}
     for tf in ["1m", "5m", "15m", "1h"]:

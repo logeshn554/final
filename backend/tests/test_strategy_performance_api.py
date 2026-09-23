@@ -21,7 +21,11 @@ def test_db(tmp_path):
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    from config import settings
+    headers = {}
+    if settings.api_auth_token:
+        headers["Authorization"] = f"Bearer {settings.api_auth_token}"
+    return TestClient(app, headers=headers)
 
 
 def test_database_paper_trades_lifecycle(test_db):

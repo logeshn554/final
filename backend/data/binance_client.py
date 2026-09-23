@@ -20,41 +20,66 @@ TF_MAP = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1
 class BinanceClient:
     """Production Binance REST + WebSocket client for ETHUSDT."""
 
-    def __init__(self, arg1: Any = None, arg2: Any = None):
-        # Support both (config, candle_store) and (candle_store, config)
-        if isinstance(arg1, CandleStore):
-            self.store = arg1
-            config = arg2 or {}
-        elif isinstance(arg2, CandleStore):
-            self.store = arg2
-            config = arg1 or {}
-        else:
-            self.store = CandleStore(buffer_size=1000)
-            config = arg1 or {}
+    def __init__(
+        self,
+        candle_store: CandleStore,
+        *,
+        symbol: str = "ETHUSDT",
+        timeframes: list[str] | None = None,
+        rest_urls: list[str] | None = None,
+        ws_urls: list[str] | None = None,
+        request_timeout: int = 10,
+        max_retries: int = 3,
+    ):
+        self.store = candle_store
+        self.symbol = symbol.upper()
+        self.timeframes = timeframes or ["1m", "5m", "15m", "1h"]
 
-        binance_cfg = config.get("binance", {}) if isinstance(config, dict) else {}
-        self.symbol = config.get("symbol", "ETHUSDT").upper() if isinstance(config, dict) else "ETHUSDT"
-        self.timeframes = config.get("timeframes", ["1m", "5m", "15m", "1h"]) if isinstance(config, dict) else ["1m", "5m", "15m", "1h"]
-
-        self.rest_urls = binance_cfg.get("rest_urls", [
+        self.rest_urls = rest_urls or [
+            "https://data-api.binance.vision",
             "https://api.binance.com",
             "https://api1.binance.com",
             "https://api2.binance.com",
             "https://api3.binance.com",
-            "https://data-api.binance.vision",
-        ])
-        self.ws_urls = binance_cfg.get("ws_urls", [
+        ]
+        self.ws_urls = ws_urls or [
             "wss://stream.binance.com:9443/ws",
             "wss://stream.binance.com:443/ws",
-            "wss://stream.binance.vision/ws",
-        ])
-        self.timeout = binance_cfg.get("request_timeout", 10)
-        self.max_retries = binance_cfg.get("max_retries", 3)
+            "wss://data-stream.binance.vision/ws",
+        ]
+        self.timeout = request_timeout
+        self.max_retries = max_retries
 
         self._ws = None
         self._running = False
         self._last_msg_time = 0.0
         self._on_tick: Optional[Callable] = None
+
+    @classmethod
+    def from_settings(cls, store: CandleStore, settings: Any) -> "BinanceClient":
+        """Factory creating client from typed AppSettings or dict (C5)."""
+        if hasattr(settings, "binance"):
+            b = settings.binance
+            return cls(
+                store,
+                symbol=getattr(settings, "symbol", "ETHUSDT"),
+                timeframes=getattr(settings, "timeframes", None),
+                rest_urls=getattr(b, "rest_urls", None),
+                ws_urls=getattr(b, "ws_urls", None),
+                request_timeout=getattr(b, "request_timeout", 10),
+                max_retries=getattr(b, "max_retries", 3),
+            )
+        cfg = settings if isinstance(settings, dict) else {}
+        b = cfg.get("binance", {})
+        return cls(
+            store,
+            symbol=cfg.get("symbol", "ETHUSDT"),
+            timeframes=cfg.get("timeframes", None),
+            rest_urls=b.get("rest_urls", None),
+            ws_urls=b.get("ws_urls", None),
+            request_timeout=b.get("request_timeout", 10),
+            max_retries=b.get("max_retries", 3),
+        )
 
     # ─── REST API ─────────────────────────────────────────────────────
 
@@ -160,11 +185,15 @@ class BinanceClient:
         url = f"{ws_base_url}/{streams}"
         logger.info(f"Connecting real-time {self.symbol} WebSocket: {url}")
 
-        async with websockets.connect(url, ping_interval=20) as ws:
-            self._ws = ws
-            self._last_msg_time = time.time()
-            logger.info(f"Real-time WebSocket connected for {self.symbol}")
+        async def _watchdog(ws, timeout: float = 45.0):
+            while self._running:
+                await asyncio.sleep(10)
+                if self._last_msg_time and (time.time() - self._last_msg_time > timeout):
+                    logger.error(f"WebSocket stale for {timeout}s — forcing reconnect")
+                    await ws.close()
+                    return
 
+        async def _recv_loop(ws):
             async for raw in ws:
                 try:
                     msg = json.loads(raw)
@@ -174,6 +203,16 @@ class BinanceClient:
                         self._process_kline(data)
                 except json.JSONDecodeError:
                     continue
+
+        async with websockets.connect(url, ping_interval=20) as ws:
+            self._ws = ws
+            self._last_msg_time = time.time()
+            logger.info(f"Real-time WebSocket connected for {self.symbol}")
+            await asyncio.gather(
+                _recv_loop(ws),
+                _watchdog(ws, timeout=45.0),
+                return_exceptions=True,
+            )
 
     def _process_kline(self, msg: dict) -> None:
         """Parse kline WebSocket message and update store."""
@@ -206,6 +245,13 @@ class BinanceClient:
         if self._ws:
             asyncio.ensure_future(self._ws.close())
 
+    def is_data_fresh(self, max_age_seconds: float = 60.0) -> bool:
+        """Check if WebSocket data has been received within max_age_seconds."""
+        if not self._last_msg_time:
+            return False
+        return (time.time() - self._last_msg_time) <= max_age_seconds
+
     @property
     def is_connected(self) -> bool:
-        return (time.time() - self._last_msg_time) < 15.0 if self._last_msg_time else False
+        return (time.time() - self._last_msg_time) < 45.0 if self._last_msg_time else False
+

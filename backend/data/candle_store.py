@@ -12,8 +12,10 @@ from typing import Optional
 import threading
 import time
 import logging
+from data.candle_validator import validate_candle
 
 logger = logging.getLogger(__name__)
+
 
 
 @dataclass
@@ -172,6 +174,10 @@ class CandleStore:
         }
 
     def add_candle(self, timeframe: str, candle: Candle) -> None:
+        val = validate_candle(candle)
+        if not val.is_valid:
+            logger.warning(f"Skipping invalid candle on {timeframe}: {val.reason}")
+            return
         if timeframe not in self.buffers:
             self.buffers[timeframe] = TimeframeBuffer(max_size=1000)
             if timeframe not in self.timeframes:
@@ -179,11 +185,23 @@ class CandleStore:
         self.buffers[timeframe].add(candle)
 
     def add_candles(self, timeframe: str, candles: list[Candle]) -> int:
+        valid_candles = []
+        for c in candles:
+            val = validate_candle(c)
+            if val.is_valid:
+                valid_candles.append(c)
+            else:
+                logger.warning(f"Skipping invalid candle on {timeframe}: {val.reason}")
+
+        if not valid_candles:
+            return 0
+
         if timeframe not in self.buffers:
             self.buffers[timeframe] = TimeframeBuffer(max_size=1000)
             if timeframe not in self.timeframes:
                 self.timeframes.append(timeframe)
-        return self.buffers[timeframe].add_batch(candles)
+        return self.buffers[timeframe].add_batch(valid_candles)
+
 
     def get_df(self, timeframe: str) -> pd.DataFrame:
         if timeframe in self.buffers:
@@ -231,6 +249,27 @@ class CandleStore:
 
     def freshness(self) -> dict[str, bool]:
         return {tf: buf.is_fresh() for tf, buf in self.buffers.items()}
+
+    def get_atr(self, timeframe: str = "15m", period: int = 14) -> float:
+        """Calculate recent ATR for the specified timeframe."""
+        df = self.get_df(timeframe)
+        if len(df) < period + 1:
+            for fallback_tf in ["5m", "1m"]:
+                alt_df = self.get_df(fallback_tf)
+                if len(alt_df) >= period + 1:
+                    df = alt_df
+                    break
+        if len(df) < 2:
+            return 0.0
+        high = df["high"]
+        low = df["low"]
+        close = df["close"]
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        val = tr.ewm(alpha=1.0 / period, min_periods=min(len(tr), period)).mean().iloc[-1]
+        return float(val) if not np.isnan(val) and val > 0 else 0.0
 
     def summary(self) -> dict:
         return {

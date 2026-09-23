@@ -64,6 +64,16 @@ class Backtester:
         self.exit_engine = DynamicExitEngine()
         self.failure_analyzer = FailureAnalyzer()
 
+    def _apply_slippage(self, price: float, is_long: bool, is_entry: bool) -> float:
+        """
+        Entry BUY: fill higher (worse)    → price + slippage
+        Entry SELL: fill lower (worse)    → price - slippage
+        Exit BUY (sell to close): lower   → price - slippage
+        Exit SELL (buy to cover): higher  → price + slippage
+        """
+        direction = 1 if (is_long == is_entry) else -1
+        return price + direction * self.slippage_pts
+
     def run(
         self,
         dfs: dict[str, pd.DataFrame],   # timeframe -> DataFrame with all features
@@ -126,10 +136,11 @@ class Backtester:
 
                 if stopped_out:
                     exit_reason = "STOP_LOSS"
-                    exit_price = stop_price - (self.slippage_pts if is_long else -self.slippage_pts)
+                    exit_price = self._apply_slippage(stop_price, is_long=is_long, is_entry=False)
                 elif target_hit:
                     exit_reason = "DYNAMIC_TARGET_HIT"
-                    exit_price = target_price - (self.slippage_pts if is_long else -self.slippage_pts)
+                    exit_price = self._apply_slippage(target_price, is_long=is_long, is_entry=False)
+
                 else:
                     # Dynamic Exit evaluation mid-trade
                     rev = self.reversal_engine.assess(current_dfs[primary_tf], bar_close, direction)
@@ -226,6 +237,7 @@ class Backtester:
                         support_levels=decision.support_levels,
                         resistance_levels=decision.resistance_levels,
                         mae_invalidation=mfe_profile.mae_p85,
+                        regime=regime_state.primary_regime,
                     )
 
                     # Dynamic Take Profit target
@@ -253,11 +265,12 @@ class Backtester:
                     if sizing.notional_size_usd > 10.0:
                         in_pos = True
                         direction = decision.signal
-                        entry_price = bar_close + (self.slippage_pts if direction == "BUY" else -self.slippage_pts)
+                        entry_price = self._apply_slippage(bar_close, is_long=(direction == "BUY"), is_entry=True)
                         stop_price = stop_placement.stop_price
                         target_price = target_zone.base_target
                         pos_size = sizing.notional_size_usd / entry_price
                         entry_bar = t
+
                         highest_price = entry_price
                         lowest_price = entry_price
                         max_favorable = 0.0

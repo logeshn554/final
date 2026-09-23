@@ -160,7 +160,7 @@ export class TradeSignalEngine {
     }
 
     // ═════════════════════════════════════════════════════════
-    // 2. RESOLVED DISPLAY STATE (Keep showing outcome for 6 seconds)
+    // 2. RESOLVED DISPLAY STATE (Keep showing outcome for 3 seconds)
     // ═════════════════════════════════════════════════════════
     if (mt.status === 'RESOLVED_TP' || mt.status === 'RESOLVED_SP') {
       if (Date.now() < mt.resolutionDisplayUntil) {
@@ -173,6 +173,8 @@ export class TradeSignalEngine {
       mt.livePnlUSD = '0.00';
       mt.livePnlPct = 0;
       mt.progressPct = 0;
+      if (state.position !== 0) state.position = 0;
+      if (state.entryPrice !== 0) state.entryPrice = 0;
     }
 
     // ═════════════════════════════════════════════════════════
@@ -269,7 +271,7 @@ export class TradeSignalEngine {
 
     // Dynamic Post-Loss Cooldown (scales with market volatility ATR/Price ratio)
     const now = Date.now();
-    const dynamicCooldownMs = Math.round(clamp((atr / price) * 1000 * 3200, 10000, 45000));
+    const dynamicCooldownMs = Math.round(clamp((atr / price) * 1000 * 600, 3000, 8000));
     const isPostLossStabilizing = (now - (this.lastLossTime || 0) < dynamicCooldownMs);
 
     // 1. Breakout Sentinel Breach Check (Trigger when price breaches either sentinel boundary)
@@ -407,6 +409,7 @@ export class TradeSignalEngine {
       mt.direction = triggeredDirection;
       mt.action = isBuy ? 'BUY' : 'SELL';
       mt.triggerType = triggerType;
+      mt.status = 'IDLE';
 
       return {
         ...this._formatSetupFromMasterTrade(mt, price, equity, atr, mp),
@@ -503,25 +506,90 @@ export class TradeSignalEngine {
     }
 
     if (!isWin && this.healingEngine) {
-      this.healingEngine.reportAlgorithmError({
-        algoId: 35,
-        algoName: 'Trade Signal & Execution Engine',
-        algoTag: 'TSE',
-        action: mt.action,
-        entryPrice: mt.entryPrice,
-        exitPrice: exitPrice,
-        pnlUSD: realizedUSD,
-        currentPrice: exitPrice,
-        marketContext: {
-          atr: mt.atrValue || 15,
-          regime: mt.regime || 'TRENDING',
+      const culprits = Array.isArray(mt.contributingStrategies) && mt.contributingStrategies.length > 0
+        ? mt.contributingStrategies
+        : (state.masterDecision?.contributingStrategies || []);
+
+      const marketContext = {
+        atr: mt.atrValue || state.atr || 15,
+        regime: mt.regime || state.regime || 'TRENDING',
+        vpin: state.layer2?.microstructure?.vpin || 0.18,
+        obi: state.layer2?.microstructure?.obi || 0,
+      };
+
+      if (culprits.length > 0) {
+        // Attribute failure to top contributing strategies (capped at 3 to prevent quorum collapse)
+        const targetCulprits = culprits.slice(0, 3);
+        for (const stratId of targetCulprits) {
+          const rawId = typeof stratId === 'string' && stratId.startsWith('rl_')
+            ? stratId.replace(/^rl_/, '')
+            : stratId;
+          const numericId = Number(rawId);
+          const finalId = !isNaN(numericId) ? numericId : stratId;
+
+          this.healingEngine.reportAlgorithmError({
+            algoId: finalId,
+            algoName: `Strategy ${stratId}`,
+            algoTag: String(stratId).toUpperCase(),
+            action: mt.action,
+            entryPrice: mt.entryPrice,
+            exitPrice: exitPrice,
+            pnlUSD: realizedUSD,
+            currentPrice: exitPrice,
+            marketContext,
+          });
+        }
+      } else {
+        // Fallback attribution
+        this.healingEngine.reportAlgorithmError({
+          algoId: 'master_consensus',
+          algoName: 'Master Consensus Engine',
+          algoTag: 'MCE',
+          action: mt.action,
+          entryPrice: mt.entryPrice,
+          exitPrice: exitPrice,
+          pnlUSD: realizedUSD,
+          currentPrice: exitPrice,
+          marketContext,
+        });
+      }
+    }
+
+    // Flatten active position mark-to-market state so portfolio and execution layers can re-arm
+    if (state) {
+      state.position = 0;
+      state.entryPrice = 0;
+      state.unrealizedPnL = 0;
+      state.realizedPnL = Math.round(((state.realizedPnL || 0) + realizedUSD) * 100) / 100;
+      if (state.smartExecEngine) {
+        state.smartExecEngine.activeOrder = null;
+        state.smartExecEngine.acTrajectory = [];
+      }
+    }
+    if (typeof window !== 'undefined' && window._smartExecEngine) {
+      window._smartExecEngine.activeOrder = null;
+      window._smartExecEngine.acTrajectory = [];
+    }
+
+    // Also notify backend to close/reconcile live position on Delta Exchange & TradeManager
+    if (typeof window !== 'undefined' && window._pythonEngine && typeof window._pythonEngine.closeMasterTrade === 'function') {
+      window._pythonEngine.closeMasterTrade().catch(() => {});
+    } else if (typeof fetch !== 'undefined') {
+      fetch('http://127.0.0.1:8000/api/v1/trade/close', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer delta_live_trade_2026_authorized',
         },
-      });
+      }).catch(() => {});
     }
 
     mt.status = isWin ? 'RESOLVED_TP' : 'RESOLVED_SP';
     mt.resolutionTime = now;
-    mt.resolutionDisplayUntil = now + 6000;
+    mt.resolutionDisplayUntil = now + 3000;
+    mt.livePnlUSD = '0.00';
+    mt.livePnlPct = 0;
+    mt.progressPct = 0;
     mt.boughtTime = boughtTime;
     mt.soldTime = soldTime;
     mt.boughtDate = boughtDate;

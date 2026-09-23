@@ -31,6 +31,7 @@ class RegimeState:
     bars_in_regime: int = 1
     regime_scores: dict[str, float] = field(default_factory=dict)
     description: str = ""
+    macro_bias: str = "NEUTRAL"      # "BULL" | "BEAR" | "NEUTRAL"
 
     def to_dict(self) -> dict:
         return {
@@ -45,7 +46,9 @@ class RegimeState:
             "bars_in_regime": self.bars_in_regime,
             "regime_scores": {k: round(v, 4) for k, v in self.regime_scores.items()},
             "description": self.description,
+            "macro_bias": self.macro_bias,
         }
+
 
 
 class RegimeDetector:
@@ -93,6 +96,22 @@ class RegimeDetector:
             e50 = self._val(df_1h, "ema_50", current_price)
             ema_bullish_1h = e9 > e21 > e50
             ema_bearish_1h = e9 < e21 < e50
+
+        # Macro timeframe confirmation (4h)
+        df_4h = dfs.get("4h")
+        macro_bear = False
+        macro_bull = False
+        macro_bias = "NEUTRAL"
+        if df_4h is not None and len(df_4h) >= 20:
+            e21_4h = self._val(df_4h, "ema_21", current_price)
+            e50_4h = self._val(df_4h, "ema_50", current_price)
+            adx_4h = self._val(df_4h, "adx_14", 20.0)
+            macro_bear = current_price < e21_4h < e50_4h and adx_4h > 22
+            macro_bull = current_price > e21_4h > e50_4h and adx_4h > 22
+            if macro_bull:
+                macro_bias = "BULL"
+            elif macro_bear:
+                macro_bias = "BEAR"
 
         # Indicator metrics
         di_spread = plus_di - minus_di
@@ -160,6 +179,16 @@ class RegimeDetector:
         if 20 <= adx <= 25 and abs(di_spread) < 6:
             scores["TRANSITION"] += 0.45
 
+        # Apply 4h macro context override
+        if macro_bear:
+            scores["STRONG_UPTREND"] *= 0.3
+            scores["WEAK_UPTREND"] *= 0.5
+            scores["BREAKDOWN"] += 0.3
+        if macro_bull:
+            scores["STRONG_DOWNTREND"] *= 0.3
+            scores["WEAK_DOWNTREND"] *= 0.5
+            scores["BREAKOUT"] += 0.3
+
         # Select highest scoring regime
         best_regime = max(scores, key=lambda k: scores[k])
         highest_score = scores[best_regime]
@@ -180,7 +209,7 @@ class RegimeDetector:
         is_breakout = best_regime in ("BREAKOUT", "BREAKDOWN")
         is_ranging = best_regime in ("SIDEWAYS", "LOW_VOL", "MEAN_REVERTING")
 
-        desc = f"Regime: {best_regime} (Conf: {confidence:.0%}, ADX: {adx:.1f}, Vol: {vol_state}, Bars: {self._bars_in_regime})"
+        desc = f"Regime: {best_regime} (Conf: {confidence:.0%}, ADX: {adx:.1f}, Vol: {vol_state}, Macro: {macro_bias}, Bars: {self._bars_in_regime})"
 
         return RegimeState(
             primary_regime=best_regime,
@@ -194,7 +223,9 @@ class RegimeDetector:
             bars_in_regime=self._bars_in_regime,
             regime_scores=scores,
             description=desc,
+            macro_bias=macro_bias,
         )
+
 
     def _val(self, df: pd.DataFrame, col: str, default: float = 0.0) -> float:
         if col in df.columns and len(df) > 0:
