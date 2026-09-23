@@ -365,17 +365,23 @@ function createState() {
       },
     },
 
-    // Delta Exchange Live Trading Controls & Status
+    // Delta Exchange Live Trading Controls & Status (Default: OFF for Fail-Safe Production Safety)
     deltaTradingEnabled: (typeof localStorage !== 'undefined' && localStorage.getItem('delta_trading_enabled') !== null)
       ? localStorage.getItem('delta_trading_enabled') === 'true'
-      : true,
+      : false,
     deltaTradesCount: 0,
     deltaTradesLimit: 5,
     deltaTradesRemaining: 5,
     deltaLimitReached: false,
+    reconciliationRequired: false,
+    reconciliationMismatch: null,
 
     // NEXUS-V Institutional Production Strategy Engine State
     productionStrategy: null,
+
+    // Production Profit Algorithm — dynamic TP ladder / trail plan
+    profitPlan: null,
+    profitManagement: null,
 
     // Dynamic Movement Prediction Engine State
     movementPrediction: null,

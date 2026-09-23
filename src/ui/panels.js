@@ -196,13 +196,13 @@ export function renderAlgoGrid() {
   const bestAlgoId = diagReport?.bestAlgo?.id || 1;
 
   grid.innerHTML = filtered.map(a => {
-    const sig = STATE.signals[a.id] || { signal: 0, conf: 0.5 };
-    const diag = STATE.algoDiagnostics?.algoStates?.[a.id] || { currentWinRate: 68.5, status: 'HEALTHY', isFixed: true };
+    const diag = STATE.algoDiagnostics?.algoStates?.[a.id] || { currentWinRate: null, status: 'INSUFFICIENT_EVIDENCE', isFixed: true };
     const sc = signColor(sig.signal);
     const pct = ((sig.signal + 1) / 2 * 100).toFixed(0);
     const arrow = signArrow(sig.signal);
-    const winRateVal = diag.currentWinRate != null ? Number(diag.currentWinRate) : 68.5;
-    const winCol = winRateVal >= 75 ? 'var(--green)' : (winRateVal >= 65 ? 'var(--accent)' : 'var(--warn)');
+    const hasObservedWR = diag.currentWinRate != null && diag.totalTrades > 0;
+    const winRateVal = hasObservedWR ? Number(diag.currentWinRate) : 0;
+    const winCol = winRateVal >= 60 ? 'var(--green)' : (winRateVal >= 50 ? 'var(--accent)' : 'var(--muted)');
     const isBest = a.id === bestAlgoId;
     
     // Predicted Action: BUY or SELL
@@ -225,7 +225,7 @@ export function renderAlgoGrid() {
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <span class="algo-name">${a.tag} ${isBest ? '<span style="color:#f59e0b;font-weight:900;">👑 #1 BEST</span>' : ''}</span>
         <span style="font-size:8px;font-weight:900;color:${winCol};background:rgba(0,0,0,0.45);padding:1px 5px;border-radius:2px;border:1px solid ${winCol};">
-          Win: ${winRateVal.toFixed(1)}%
+          ${hasObservedWR ? `Win: ${winRateVal.toFixed(1)}%` : 'Sample: Pending'}
         </span>
       </div>
       <div class="algo-cat" style="display:flex;justify-content:space-between;align-items:center;">
@@ -5221,5 +5221,163 @@ export function renderMasterHistoryPage() {
     </div>
   `;
 }
+
+/**
+ * ⚡ DEDICATED FULL-PAGE ULTRA PRODUCTION ARCHITECTURE RENDERER
+ * Displays the Net Expected Edge decomposition waterfall, live reconciliation status,
+ * Production Alpha Experts, and risk-controlled execution controller.
+ */
+export function renderUltraPage() {
+  const container = document.getElementById('ultraPage');
+  if (!container) return;
+
+  const md = STATE.masterDecision || {};
+  const pp = STATE.profitPlan || md.profitPlan || {};
+  const isApproved = md.approved && md.action !== 'NO_TRADE';
+  const actionCol = md.action === 'BUY' ? 'var(--green)' : (md.action === 'SELL' ? 'var(--red)' : '#f59e0b');
+  const netEdge = Number(md.expectedNetEdge || 0);
+  const hurdle = Number(md.requiredEdgeBuffer || 0.50);
+
+  container.innerHTML = `
+    <div class="master-history-header" style="background:linear-gradient(135deg, rgba(15,23,42,0.95), rgba(30,41,59,0.95));border-bottom:2px solid #f59e0b;padding:16px 24px;display:flex;align-items:center;justify-content:space-between;">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span style="font-size:24px;">⚡</span>
+        <div>
+          <h1 style="margin:0;font-size:18px;font-weight:900;color:#f59e0b;letter-spacing:1px;">ULTRA · PRODUCTION-GRADE RISK-CONTROLLED ARCHITECTURE</h1>
+          <p style="margin:3px 0 0;font-size:11px;color:var(--muted);">Trades strictly when Net Expected Edge > 0 after fees, spread, slippage, market impact, funding carry, latency & risk</p>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <button onclick="window._toggleDeltaTrading()" class="btn-header" style="background:${STATE.deltaTradingEnabled ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'};border:1.5px solid ${STATE.deltaTradingEnabled ? 'var(--green)' : 'var(--red)'};color:${STATE.deltaTradingEnabled ? 'var(--green)' : 'var(--red)'};font-weight:900;">
+          LIVE TRADING: ${STATE.deltaTradingEnabled ? 'ON' : 'OFF (FAIL-SAFE)'}
+        </button>
+        <button onclick="window._toggleUltraPage()" class="btn-header" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:var(--text);font-weight:800;">
+          ✕ CLOSE ULTRA VIEW
+        </button>
+      </div>
+    </div>
+
+    <div style="padding:20px;max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:16px;">
+
+      <!-- Top Metric Cards -->
+      <div style="display:grid;grid-template-columns:repeat(5, 1fr);gap:12px;">
+        <div class="stat-box" style="padding:14px;background:rgba(15,23,42,0.85);border:1px solid rgba(245,158,11,0.4);border-radius:6px;">
+          <div class="stat-k" style="color:var(--muted);font-size:10px;">TRADE CONTROLLER DECISION</div>
+          <div class="stat-v" style="color:${actionCol};font-size:20px;font-weight:900;margin-top:4px;">
+            ${md.action || 'NO_TRADE'}
+          </div>
+          <div style="font-size:9px;color:var(--muted);margin-top:4px;">Mode: <b>${md.strategyMode || 'SCANNING'}</b></div>
+        </div>
+
+        <div class="stat-box" style="padding:14px;background:rgba(15,23,42,0.85);border:1px solid ${netEdge > hurdle ? 'rgba(16,185,129,0.4)' : 'rgba(239,68,68,0.4)'};border-radius:6px;">
+          <div class="stat-k" style="color:var(--muted);font-size:10px;">ESTIMATED NET EXPECTED EDGE</div>
+          <div class="stat-v" style="color:${netEdge > hurdle ? 'var(--green)' : 'var(--red)'};font-size:20px;font-weight:900;margin-top:4px;">
+            ${netEdge > 0 ? '+' : ''}$${netEdge.toFixed(2)} USD
+          </div>
+          <div style="font-size:9px;color:var(--muted);margin-top:4px;">Required Hurdle: <b>+$${hurdle.toFixed(2)}</b></div>
+        </div>
+
+        <div class="stat-box" style="padding:14px;background:rgba(15,23,42,0.85);border:1px solid rgba(0,212,255,0.3);border-radius:6px;">
+          <div class="stat-k" style="color:var(--muted);font-size:10px;">P(TP BEFORE SL) PROBABILITY</div>
+          <div class="stat-v" style="color:var(--accent);font-size:20px;font-weight:900;margin-top:4px;">
+            ${((md.probabilityOfProfit || 0.50) * 100).toFixed(1)}%
+          </div>
+          <div style="font-size:9px;color:var(--muted);margin-top:4px;">Meta-Labeler Conformal Estimate</div>
+        </div>
+
+        <div class="stat-box" style="padding:14px;background:rgba(15,23,42,0.85);border:1px solid rgba(16,185,129,0.3);border-radius:6px;">
+          <div class="stat-k" style="color:var(--muted);font-size:10px;">APPROVED POSITION SIZE</div>
+          <div class="stat-v" style="color:var(--green);font-size:20px;font-weight:900;margin-top:4px;">
+            ${md.positionSize || 0} ETH
+          </div>
+          <div style="font-size:9px;color:var(--muted);margin-top:4px;">Risk Budget: <b>$${md.riskAmountUSD || 0}</b></div>
+        </div>
+
+        <div class="stat-box" style="padding:14px;background:rgba(15,23,42,0.85);border:1px solid rgba(255,255,255,0.15);border-radius:6px;">
+          <div class="stat-k" style="color:var(--muted);font-size:10px;">EXCHANGE RECONCILIATION</div>
+          <div class="stat-v" style="color:${STATE.reconciliationRequired ? 'var(--red)' : 'var(--green)'};font-size:16px;font-weight:900;margin-top:4px;">
+            ${STATE.reconciliationRequired ? '⚠️ MISMATCH DETECTED' : '✓ IN_SYNC'}
+          </div>
+          <div style="font-size:9px;color:var(--muted);margin-top:4px;">Local: ${STATE.position || 0} ETH</div>
+        </div>
+      </div>
+
+      <!-- Production Profit Algorithm TP Ladder -->
+      <div style="background:rgba(15,23,42,0.9);border:1px solid rgba(16,185,129,0.35);border-radius:8px;padding:18px;">
+        <h2 style="font-size:13px;font-weight:900;color:var(--green);margin:0 0 12px;letter-spacing:0.5px;">
+          🎯 PRODUCTION PROFIT ALGORITHM · DYNAMIC TP LADDER + DELAYED ATR TRAIL
+        </h2>
+        <div style="display:grid;grid-template-columns:repeat(6, 1fr);gap:10px;margin-bottom:10px;">
+          <div><div style="font-size:9px;color:var(--muted);">ELIGIBLE</div><div style="font-weight:900;color:${pp.eligible ? 'var(--green)' : 'var(--red)'};">${pp.eligible ? 'YES' : 'NO'}</div></div>
+          <div><div style="font-size:9px;color:var(--muted);">TP1</div><div style="font-weight:800;">$${Number(pp.takeProfit1 || md.takeProfit1 || 0).toFixed(2)}</div></div>
+          <div><div style="font-size:9px;color:var(--muted);">TP2 (MAIN)</div><div style="font-weight:800;color:var(--accent);">$${Number(pp.takeProfit2 || md.takeProfit || 0).toFixed(2)}</div></div>
+          <div><div style="font-size:9px;color:var(--muted);">RUNNER</div><div style="font-weight:800;">$${Number(pp.takeProfitRunner || md.takeProfitRunner || 0).toFixed(2)}</div></div>
+          <div><div style="font-size:9px;color:var(--muted);">E[R] / P(TP2)</div><div style="font-weight:800;">${Number(pp.expectancyR || 0).toFixed(2)}R · ${((pp.hitProbabilityTp2 || 0) * 100).toFixed(0)}%</div></div>
+          <div><div style="font-size:9px;color:var(--muted);">TRAIL AFTER</div><div style="font-weight:800;">+${Number(pp.trailActivateR || 1).toFixed(1)}R · ${Number(pp.trailDistanceUSD || 0).toFixed(1)}$ ATR</div></div>
+        </div>
+        <div style="font-size:10px;color:var(--muted);">${pp.reason || 'Awaiting alpha + profit plan…'} · Scale-out ${Math.round((pp.scaleOut1Pct || 0.4) * 100)}% / ${Math.round((pp.scaleOut2Pct || 0.35) * 100)}% · stops never widen</div>
+      </div>
+
+      <!-- Friction Costs Breakdown Waterfall Table -->
+      <div style="background:rgba(15,23,42,0.9);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:18px;">
+        <h2 style="font-size:13px;font-weight:900;color:var(--accent);margin:0 0 12px;letter-spacing:0.5px;">
+          ⚖️ COMPLETE TRANSACTION & FRICTION DECOMPOSITION (USD / UNIT)
+        </h2>
+        <div style="display:grid;grid-template-columns:repeat(7, 1fr);gap:10px;">
+          <div style="background:rgba(255,255,255,0.03);padding:10px;border-radius:4px;border-left:3px solid var(--accent);">
+            <div style="font-size:9px;color:var(--muted);">Gross Return</div>
+            <div style="font-size:13px;font-weight:800;color:var(--accent);margin-top:2px;">+$${md.expectedGrossReturn || 0}</div>
+          </div>
+          <div style="background:rgba(255,255,255,0.03);padding:10px;border-radius:4px;border-left:3px solid var(--red);">
+            <div style="font-size:9px;color:var(--muted);">Taker Fees</div>
+            <div style="font-size:13px;font-weight:800;color:var(--red);margin-top:2px;">-$${md.estimatedFees || 0}</div>
+          </div>
+          <div style="background:rgba(255,255,255,0.03);padding:10px;border-radius:4px;border-left:3px solid var(--red);">
+            <div style="font-size:9px;color:var(--muted);">Spread Cost</div>
+            <div style="font-size:13px;font-weight:800;color:var(--red);margin-top:2px;">-$${md.estimatedSpreadCost || 0}</div>
+          </div>
+          <div style="background:rgba(255,255,255,0.03);padding:10px;border-radius:4px;border-left:3px solid var(--red);">
+            <div style="font-size:9px;color:var(--muted);">Slippage</div>
+            <div style="font-size:13px;font-weight:800;color:var(--red);margin-top:2px;">-$${md.estimatedSlippage || 0}</div>
+          </div>
+          <div style="background:rgba(255,255,255,0.03);padding:10px;border-radius:4px;border-left:3px solid var(--red);">
+            <div style="font-size:9px;color:var(--muted);">Market Impact</div>
+            <div style="font-size:13px;font-weight:800;color:var(--red);margin-top:2px;">-$${md.estimatedMarketImpact || 0}</div>
+          </div>
+          <div style="background:rgba(255,255,255,0.03);padding:10px;border-radius:4px;border-left:3px solid var(--red);">
+            <div style="font-size:9px;color:var(--muted);">Funding Carry</div>
+            <div style="font-size:13px;font-weight:800;color:var(--red);margin-top:2px;">-$${md.estimatedFundingCost || 0}</div>
+          </div>
+          <div style="background:rgba(255,255,255,0.03);padding:10px;border-radius:4px;border-left:3px solid var(--red);">
+            <div style="font-size:9px;color:var(--muted);">Latency Penalty</div>
+            <div style="font-size:13px;font-weight:800;color:var(--red);margin-top:2px;">-$${md.estimatedLatencyCost || 0}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Strategy State Machine & Reason -->
+      <div style="background:rgba(15,23,42,0.9);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:18px;">
+        <h2 style="font-size:13px;font-weight:900;color:var(--green);margin:0 0 10px;">
+          🛡 MASTER CONTROLLER AUDIT & REASONING
+        </h2>
+        <div style="font-size:12px;color:var(--text);font-family:var(--font-mono);line-height:1.6;background:rgba(0,0,0,0.4);padding:12px;border-radius:4px;border:1px solid rgba(255,255,255,0.06);">
+          ${md.reason || 'Initializing MasterMind controller state machine...'}
+        </div>
+      </div>
+
+    </div>
+  `;
+}
+
+window._toggleUltraPage = () => {
+  const el = document.getElementById('ultraPage');
+  if (!el) return;
+  const isHidden = el.style.display === 'none' || el.style.display === '';
+  el.style.display = isHidden ? 'block' : 'none';
+  if (isHidden) {
+    renderUltraPage();
+  }
+};
+
 
 

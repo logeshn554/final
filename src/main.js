@@ -25,6 +25,7 @@ import {
   renderAutonomousHealingTerminal,
   renderResearchAlgorithmStack,
   renderMasterHistoryPage,
+  renderUltraPage,
 } from './ui/panels.js';
 import { VolatilityMasterSuite } from './engine/volatility-suite.js';
 import { DeepMicrostructureEngine } from './engine/microstructure-deep.js';
@@ -61,6 +62,9 @@ import { BinanceLiveStream } from './engine/binance-live.js';
 import { PythonEngineBridge } from './engine/python-engine-bridge.js';
 import { MastermindEngine } from './engine/mastermind.js';
 import { StrategyPerformanceEngine } from './engine/strategy-performance-engine.js';
+import { DeltaExecutionReconciliationEngine } from './engine/delta-execution-reconciliation.js';
+import { ProductionProfitAlgorithm } from './engine/production-profit-algorithm.js';
+import { runAllTests } from '../tests/test_production_architecture.js';
 
 // ═══════════════════════════════════════════════════════
 // INITIALIZATION
@@ -82,6 +86,14 @@ const mastermindEngine = new MastermindEngine();
 STATE.mastermindEngine = mastermindEngine;
 window._mastermindEngine = mastermindEngine;
 
+const productionProfitAlgo = new ProductionProfitAlgorithm();
+STATE.productionProfitAlgo = productionProfitAlgo;
+window._productionProfitAlgo = productionProfitAlgo;
+
+const deltaReconciler = new DeltaExecutionReconciliationEngine();
+STATE.deltaReconciler = deltaReconciler;
+window._deltaReconciler = deltaReconciler;
+
 // Create ensemble & 6-layer quantitative engines
 const ensemble = new EnsembleEngine();
 const legacyRisk = new RiskEngine();
@@ -94,6 +106,17 @@ STATE.smartExecEngine = smartExecEngine;
 window._smartExecEngine = smartExecEngine;
 const prodRiskEngine = new ProductionRiskEngine();
 const attrEngine = new AttributionFeedbackEngine();
+
+// Periodic Exchange Position Reconciliation Loop (Every 10s)
+setInterval(() => {
+  if (STATE.deltaTradingEnabled && typeof deltaReconciler.reconcile === 'function') {
+    deltaReconciler.reconcile(STATE).then(status => {
+      if (status === 'RECONCILIATION_REQUIRED') {
+        log('RECONCILIATION', `⚠️ Exchange position mismatch detected! Syncing local state with exchange...`, 'warn');
+      }
+    }).catch(() => {});
+  }
+}, 10000);
 
 // Candlestick, Multi-Timeframe & Classical Predictors Engines
 const candlestickEngine = new CandlestickPatternEngine();
@@ -140,13 +163,15 @@ STATE.metaLabeler = metaLabeler;
 const conformalPredictor = new ConformalPredictor();
 
 
-// Expose global click handlers for auto-fix buttons and $10 benchmark
 window._fixAlgo = (id) => {
   algoDiagnosticsEngine.fixAlgorithm(id);
   renderAlgoGrid();
   renderAlgoWinRateAndFixPanel();
   renderAutonomousHealingTerminal();
 };
+
+window._runArchitectureTests = runAllTests;
+
 window._fixAllAlgos = () => {
   algoDiagnosticsEngine.autoFixAll();
   renderAlgoGrid();
@@ -187,12 +212,36 @@ window._hideMasterHistoryPage = () => {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 };
 
-window._toggleMasterHistoryPage = () => {
-  const histPage = document.getElementById('masterHistoryPage');
-  if (histPage && histPage.style.display !== 'none') {
-    window._hideMasterHistoryPage();
+window._showUltraPage = () => {
+  window._hideMasterHistoryPage();
+  const ultraPage = document.getElementById('ultraPage');
+  const mainLayout = document.querySelector('.main-layout');
+  const layerNav = document.getElementById('layerNav');
+  if (ultraPage) {
+    ultraPage.style.display = 'block';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  if (mainLayout) mainLayout.style.display = 'none';
+  if (layerNav) layerNav.style.display = 'none';
+  renderUltraPage();
+};
+
+window._hideUltraPage = () => {
+  const ultraPage = document.getElementById('ultraPage');
+  const mainLayout = document.querySelector('.main-layout');
+  const layerNav = document.getElementById('layerNav');
+  if (ultraPage) ultraPage.style.display = 'none';
+  if (mainLayout) mainLayout.style.display = '';
+  if (layerNav) layerNav.style.display = '';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+};
+
+window._toggleUltraPage = () => {
+  const ultraPage = document.getElementById('ultraPage');
+  if (ultraPage && ultraPage.style.display !== 'none') {
+    window._hideUltraPage();
   } else {
-    window._showMasterHistoryPage();
+    window._showUltraPage();
   }
 };
 
@@ -343,7 +392,7 @@ window._manualExecuteTrade = (direction = 1) => {
       STATE.masterTrade.atrValue = STATE.atr || 16.0;
       STATE.masterTrade.scanReason = null;
 
-      // ── LIVE DELTA EXCHANGE 1-LOT BRACKET EXECUTION (MANUAL TRIGGER) ──
+      // ── LIVE DELTA EXCHANGE RISK-APPROVED BRACKET EXECUTION (MANUAL TRIGGER) ──
       autoExecuteDeltaTrade({
         direction: direction === 1 ? 'BUY' : 'SELL',
         entryPrice: STATE.price,
@@ -351,6 +400,8 @@ window._manualExecuteTrade = (direction = 1) => {
         stopLossPrice: spPrice,
         tp: tpPrice,
         sp: spPrice,
+        quantity: manualDecision.positionSize || manualDecision.risk?.positionSizeETH || 1.0,
+        positionSize: manualDecision.positionSize || manualDecision.risk?.positionSizeETH || 1.0,
         isManual: true,
       }).catch(err => {
         log('DELTA AUTO-TRADE', `Manual trigger exception: ${err?.message || err}`, 'error');
@@ -449,9 +500,11 @@ export async function autoExecuteDeltaTrade(params = {}) {
     if (!sl || isNaN(sl) || sl <= currentPrice) sl = Number((currentPrice + defaultSlDist).toFixed(2));
   }
   const sym = 'ETHUSD';
-  const size = 1; // Strictly 1 lot as per institutional configuration
+  // Use approved position size from MasterMind / Risk Gate instead of hardcoded 1 lot
+  const approvedSize = Number(params.quantity || params.positionSize || md.positionSize || md.risk?.positionSizeETH || 1.0);
+  const size = Math.max(1, Math.round(approvedSize));
 
-  log('DELTA AUTO-TRADE', `⚡ MASTER ENGINE SIGNAL [${sig}]: Submitting 1-Lot Bracket Order to Delta Exchange India (Trade #${currentCount + 1}/${tradeLimit}, Entry: $${currentPrice.toFixed(2)}, TP: $${tp.toFixed(2)}, SP (Stop Loss): $${sl.toFixed(2)})...`, 'warn');
+  log('DELTA AUTO-TRADE', `⚡ MASTER ENGINE SIGNAL [${sig}]: Submitting Risk-Approved Order (${size} Contracts, ~${(size).toFixed(2)} ETH) to Delta Exchange India (Trade #${currentCount + 1}/${tradeLimit}, Entry: $${currentPrice.toFixed(2)}, TP: $${tp.toFixed(2)}, SP (Stop Loss): $${sl.toFixed(2)})...`, 'warn');
 
   try {
     let res = null;
@@ -497,14 +550,17 @@ export async function autoExecuteDeltaTrade(params = {}) {
 
       const orderId = res.trade?.order_id || res.order_id || 'OK';
       const lev = res.trade?.leverage || res.leverage || 'Auto';
+      const confirmedFilledSize = Number(res.trade?.filled_size || res.trade?.size || res.filled_size || size);
+      const filledETH = Number(res.trade?.filled_eth || (confirmedFilledSize * 0.01) || (size * 0.01));
 
-      log('DELTA AUTO-TRADE', `✅ DELTA ORDER FILLED! Order ID: ${orderId} | Side: ${sig} 1 Lot ETH | Dynamic Leverage: ${lev}x | TP: $${tp.toFixed(2)} | SP: $${sl.toFixed(2)} | Trades: ${newCount}/${tradeLimit}`, 'success');
+      log('DELTA AUTO-TRADE', `✅ DELTA ORDER FILLED! Order ID: ${orderId} | Side: ${sig} ${confirmedFilledSize} Contracts | Dynamic Leverage: ${lev}x | TP: $${tp.toFixed(2)} | SP: $${sl.toFixed(2)} | Trades: ${newCount}/${tradeLimit}`, 'success');
 
       if (params.isManual) {
-        alert(`✅ Delta Exchange Live Trade Executed!\n\nTrades Taken: ${newCount} / ${tradeLimit} (${Math.max(0, tradeLimit - newCount)} remaining)\nOrder ID: ${orderId}\nSide: ${sig} 1 Lot ETH\nDynamic Leverage: ${lev}x\nTP (Take Profit): $${tp.toFixed(2)}\nSP (Stop Price): $${sl.toFixed(2)}`);
+        alert(`✅ Delta Exchange Live Trade Executed!\n\nTrades Taken: ${newCount} / ${tradeLimit} (${Math.max(0, tradeLimit - newCount)} remaining)\nOrder ID: ${orderId}\nSide: ${sig} ${confirmedFilledSize} Contracts\nDynamic Leverage: ${lev}x\nTP (Take Profit): $${tp.toFixed(2)}\nSP (Stop Price): $${sl.toFixed(2)}`);
       }
 
-      // Update local masterTrade state to reflect position in UI
+      // Update position state strictly reflecting exchange-confirmed filled quantity
+      STATE.position = (sig === 'BUY' ? 1 : -1) * filledETH;
       if (STATE.masterTrade) {
         STATE.masterTrade.status = 'ACTIVE';
         STATE.masterTrade.direction = sig === 'BUY' ? 1 : -1;
@@ -514,8 +570,8 @@ export async function autoExecuteDeltaTrade(params = {}) {
         STATE.masterTrade.spPrice = sl;
         STATE.masterTrade.tpDistance = Math.abs(tp - currentPrice);
         STATE.masterTrade.slDistance = Math.abs(sl - currentPrice);
-        STATE.masterTrade.positionETH = 0.01;
-        STATE.masterTrade.positionUSD = (currentPrice * 0.01).toFixed(2);
+        STATE.masterTrade.positionETH = filledETH;
+        STATE.masterTrade.positionUSD = (currentPrice * filledETH).toFixed(2);
         STATE.masterTrade.entryTime = Date.now();
         STATE.masterTrade.entryTimeStr = new Date().toLocaleTimeString();
         STATE.masterTrade.boughtTime = sig === 'BUY' ? new Date().toLocaleTimeString() : null;
@@ -596,6 +652,8 @@ window._sendLiveDeltaTrade = () => {
     stopLossPrice: STATE.masterTrade?.spPrice,
     tp: STATE.masterTrade?.tpPrice,
     sp: STATE.masterTrade?.spPrice,
+    quantity: STATE.masterTrade?.positionETH || STATE.masterDecision?.positionSize || 1.0,
+    positionSize: STATE.masterTrade?.positionETH || STATE.masterDecision?.positionSize || 1.0,
   });
 };
 
@@ -651,20 +709,19 @@ export function evaluateDataQualityGate() {
   // Rigorous Gate: Must have a live fresh price AND (fresh order book depth OR at least 5 kline prices)
   // The depth check is waived only during the first 30 ticks (startup warm-up) so the system
   // is not permanently stalled if the order book WebSocket is slightly delayed on connect.
-  const startupGrace = STATE.tick < 30;
-  const hasDepthOrKlines = depthFresh || klinesFresh;
-  const isReady = priceFresh && (startupGrace || hasDepthOrKlines) && STATE.connection.status !== 'offline';
+  const startupGrace = STATE.tick < 10;
+  // Strict live market freshness: Historical arrays cannot substitute for live heartbeat
+  const liveHeartbeatFresh = (now - times.priceTime < 10000);
+  const isReady = priceFresh && liveHeartbeatFresh && (startupGrace || depthFresh) && STATE.connection.status !== 'offline';
 
   // Gate label is explicit about what data is backing the decision
   let gateStatus;
   if (!isReady) {
-    gateStatus = 'GATE_LOCKED (AWAITING VERIFIED DATA)';
+    gateStatus = !liveHeartbeatFresh ? 'GATE_LOCKED (STALE LIVE STREAM HEARTBEAT)' : 'GATE_LOCKED (AWAITING VERIFIED DATA)';
   } else if (priceFresh && depthFresh) {
     gateStatus = 'GATE_OPEN (LIVE PRICE + ORDER BOOK)';
-  } else if (priceFresh && klinesFresh) {
-    gateStatus = 'GATE_OPEN (LIVE PRICE + KLINES — DEPTH STALE)';
   } else {
-    gateStatus = 'GATE_OPEN (STARTUP WARM-UP)';
+    gateStatus = 'GATE_OPEN (WARM-UP LIVE VERIFIED)';
   }
 
   STATE.dataQualityGate = {
@@ -1108,6 +1165,45 @@ function tick() {
     scanReason: STATE.masterTrade?.scanReason,
   });
   STATE.masterDecision = masterDecision;
+  STATE.profitPlan = masterDecision.profitPlan || productionProfitAlgo.lastPlan || null;
+
+  // ── PRODUCTION PROFIT ALGO: manage live exits (partial TP, BE, delayed ATR trail) ──
+  if (STATE.masterTrade?.status === 'ACTIVE' && STATE.masterTrade.direction) {
+    const mgmt = productionProfitAlgo.managePosition(STATE.masterTrade, {
+      price: STATE.price,
+      atr: currentATR,
+    });
+    STATE.profitManagement = mgmt;
+    // Mirror trailing / breakeven stop into the exchange-facing stop field
+    if (STATE.masterTrade.currentSLPrice) {
+      STATE.masterTrade.spPrice = STATE.masterTrade.currentSLPrice;
+      STATE.masterTrade.slDistance = Math.abs(STATE.masterTrade.spPrice - STATE.masterTrade.entryPrice);
+    }
+    if (STATE.masterTrade.positionETH !== undefined && STATE.masterTrade.sizeETH !== undefined) {
+      STATE.masterTrade.positionETH = STATE.masterTrade.sizeETH;
+    }
+    if (mgmt.action === 'CLOSE') {
+      const isWin = (mgmt.pnlUSD || 0) > 0;
+      STATE.masterTrade.status = isWin ? 'RESOLVED_TP' : 'RESOLVED_SP';
+      STATE.masterTrade.resolutionTime = Date.now();
+      STATE.masterTrade.resolutionDisplayUntil = Date.now() + 8000;
+      STATE.masterTrade.lastOutcome = {
+        reason: mgmt.reason,
+        pnlUSD: mgmt.pnlUSD,
+        exitPrice: STATE.price,
+      };
+      log(
+        'PROFIT ALGO',
+        `Exit ${mgmt.reason} · PnL $${Number(mgmt.pnlUSD || 0).toFixed(2)} · R=${STATE.masterTrade.rMultiple ?? '—'}`,
+        isWin ? 'info' : 'warn'
+      );
+    } else if (mgmt.actions?.length) {
+      const last = mgmt.actions[mgmt.actions.length - 1];
+      if (last.type === 'PARTIAL_TP1' || last.type === 'PARTIAL_TP2' || last.type.startsWith('TRAIL') || last.type === 'MOVE_BREAKEVEN') {
+        log('PROFIT ALGO', `${last.type} @ $${STATE.price.toFixed(2)} · SL→$${STATE.masterTrade.currentSLPrice}`, 'info');
+      }
+    }
+  }
 
   // (masterTrade lifecycle is now handled AFTER the pre-trade risk gate below)
 
@@ -1158,11 +1254,18 @@ function tick() {
       STATE.masterTrade.direction = masterDecision.direction;
       STATE.masterTrade.action = masterDecision.signal;
       STATE.masterTrade.entryPrice = STATE.price;
-      STATE.masterTrade.tpPrice = masterDecision.execution?.takeProfitPrice || masterDecision.movement?.favorable?.targetPrice;
-      STATE.masterTrade.spPrice = masterDecision.execution?.stopPrice || masterDecision.movement?.adverse?.stopPrice;
+      const pp = masterDecision.profitPlan || null;
+      STATE.masterTrade.tpPrice = pp?.takeProfit2 || masterDecision.execution?.takeProfitPrice || masterDecision.movement?.favorable?.targetPrice;
+      STATE.masterTrade.tp1Price = pp?.takeProfit1 || STATE.masterTrade.tpPrice;
+      STATE.masterTrade.tp2Price = pp?.takeProfit2 || STATE.masterTrade.tpPrice;
+      STATE.masterTrade.tpRunnerPrice = pp?.takeProfitRunner || STATE.masterTrade.tpPrice;
+      STATE.masterTrade.spPrice = pp?.stopLoss || masterDecision.execution?.stopPrice || masterDecision.movement?.adverse?.stopPrice;
+      STATE.masterTrade.initialSLPrice = STATE.masterTrade.spPrice;
+      STATE.masterTrade.currentSLPrice = STATE.masterTrade.spPrice;
       STATE.masterTrade.tpDistance = STATE.masterTrade.tpPrice ? Math.abs(STATE.masterTrade.tpPrice - STATE.price) : 0;
       STATE.masterTrade.slDistance = STATE.masterTrade.spPrice ? Math.abs(STATE.masterTrade.spPrice - STATE.price) : 0;
       STATE.masterTrade.positionETH = masterDecision.risk.positionSizeETH;
+      STATE.masterTrade.sizeETH = masterDecision.risk.positionSizeETH;
       STATE.masterTrade.positionUSD = (masterDecision.risk.positionSizeETH * STATE.price).toFixed(2);
       STATE.masterTrade.entryTime = Date.now();
       STATE.masterTrade.entryTimeStr = new Date().toLocaleTimeString();
@@ -1177,6 +1280,20 @@ function tick() {
       STATE.masterTrade.contributingStrategies = [...(masterDecision.contributingStrategies || [])];
       STATE.masterTrade.regime = masterDecision.regime || STATE.regime || 'TRENDING';
       STATE.masterTrade.atrValue = currentATR;
+      STATE.masterTrade.atrAtEntry = currentATR;
+      STATE.masterTrade.trailActivateR = pp?.trailActivateR || 1.0;
+      STATE.masterTrade.trailDistanceUSD = pp?.trailDistanceUSD || currentATR * 1.5;
+      STATE.masterTrade.trailAtrMult = pp?.trailAtrMult || 1.5;
+      STATE.masterTrade.scaleOut1Pct = pp?.scaleOut1Pct || 0.40;
+      STATE.masterTrade.scaleOut2Pct = pp?.scaleOut2Pct || 0.35;
+      STATE.masterTrade.tp1Executed = false;
+      STATE.masterTrade.tp2Executed = false;
+      STATE.masterTrade.trailActive = false;
+      STATE.masterTrade.breakevenSet = false;
+      STATE.masterTrade.realizedPartialPnl = 0;
+      STATE.masterTrade.expectancyR = pp?.expectancyR || 0;
+      STATE.masterTrade.hitProbabilityTp2 = pp?.hitProbabilityTp2 || 0;
+      STATE.masterTrade.profitAlgo = 'ProductionProfitAlgorithm';
       STATE.masterTrade.scanReason = null;
 
       // ── AUTOMATIC DELTA EXCHANGE 1-LOT BRACKET EXECUTION (MASTER ENGINE AUTO-TRIGGER) ──
@@ -1188,6 +1305,8 @@ function tick() {
         stopLossPrice: STATE.masterTrade.spPrice,
         tp: STATE.masterTrade.tpPrice,
         sp: STATE.masterTrade.spPrice,
+        quantity: masterDecision.positionSize || masterDecision.risk?.positionSizeETH || 1.0,
+        positionSize: masterDecision.positionSize || masterDecision.risk?.positionSizeETH || 1.0,
         isManual: false,
       }).catch(err => {
         log('DELTA AUTO-TRADE', `Automated trigger exception: ${err?.message || err}`, 'error');
@@ -1247,8 +1366,34 @@ function tick() {
   );
   STATE.layer5 = riskLayer;
   if (riskLayer.mustLiquidate && Math.abs(STATE.position) > 0.01) {
-    log(`KILL SWITCH ACTIVATED: ${riskLayer.killSwitchReason} — FLATTENING TO 100% CASH`, 'warn');
-    STATE.position = 0;
+    log(`KILL SWITCH ACTIVATED: ${riskLayer.killSwitchReason} — Submitting reduce-only market liquidation to exchange`, 'warn');
+    if (typeof fetch !== 'undefined') {
+      fetch('http://127.0.0.1:8000/api/v1/trade/close', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer delta_live_trade_2026_authorized',
+        },
+        body: JSON.stringify({
+          symbol: 'ETHUSD',
+          reason: riskLayer.killSwitchReason || 'EMERGENCY_RISK_KILL_SWITCH',
+          reduce_only: true,
+        }),
+      }).then(r => r.json()).then(res => {
+        if (res && (res.status === 'closed' || res.success)) {
+          STATE.position = 0;
+          if (STATE.masterTrade) {
+            STATE.masterTrade.status = 'IDLE';
+            STATE.masterTrade.action = 'SCANNING';
+          }
+          log('KILL SWITCH EXECUTED', '✅ Exchange confirmed position flattened to 0. State reconciled.', 'success');
+        }
+      }).catch(err => {
+        log('KILL SWITCH ERROR', `Failed to execute liquidation on exchange: ${err.message}`, 'error');
+      });
+    } else {
+      STATE.position = 0;
+    }
   }
 
   // ── LAYER 6: ATTRIBUTION, MODEL DRIFT & A/B TESTING ──
@@ -1319,6 +1464,9 @@ function tick() {
     safe(renderAlgoCapitalBenchmarkPanel);
     if (document.getElementById('masterHistoryPage')?.style.display !== 'none') {
       safe(renderMasterHistoryPage);
+    }
+    if (document.getElementById('ultraPage')?.style.display !== 'none') {
+      safe(renderUltraPage);
     }
 
 
@@ -1484,6 +1632,14 @@ document.getElementById('layerNav')?.addEventListener('click', (e) => {
 });
 
 window._switchLayer = (layerId) => {
+  if (layerId === 'ultra') {
+    const ultraEl = document.getElementById('ultraPage');
+    if (ultraEl) {
+      ultraEl.style.display = 'block';
+      renderUltraPage();
+    }
+    return;
+  }
   STATE.activeLayerTab = layerId;
   document.querySelectorAll('#layerNav .layer-tab').forEach(t => {
     if (t.dataset.layer === layerId) t.classList.add('active');
